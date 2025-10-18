@@ -1,0 +1,29 @@
+=== GitHub Project Description (Short) ===
+
+Dual-channel Push-to-Talk speech recognition app with automatic clipboard copy. Supports Polish and English, runs in system tray. Built with Python/Tkinter + Google Web Speech API.
+
+=== Alternative (More Detailed) ===
+
+Desktop application for dual-microphone Push-to-Talk speech recognition. Record from two independent channels, automatically transcribe using Google Web Speech API, and copy text to clipboard. System tray integration, customizable hotkeys, supports Polish and English.
+
+=== Alternative (Technical) ===
+
+Python/Tkinter desktop app for dual-channel PTT speech-to-text with clipboard integration. Features: 2 independent microphones, Google Web Speech API, multi-channel to mono audio conversion (numpy), system tray, global hotkeys, detailed logging.
+
+=== Topics/Tags for GitHub ===
+
+speech-recognition
+speech-to-text
+push-to-talk
+ptt
+clipboard
+tkinter
+python
+google-speech-api
+desktop-app
+system-tray
+audio-processing
+pyaudio
+multi-channel
+voice-recognition
+transcription
