@@ -1,84 +1,84 @@
-# Speech-to-Clipboard (PTT, 2 kanały)
+# Speech-to-Clipboard (PTT, 2 Channels)
 
-Prosta aplikacja desktopowa (Tkinter) do nagrywania mowy z dwóch wybranych mikrofonów z klawiszem Push‑to‑Talk i automatycznego wklejania rozpoznanego tekstu do schowka. Działa w tle z ikoną w zasobniku systemowym. Obsługuje polski i angielski, zapis ostatniego nagrania i szczegółowe logowanie.
+A simple desktop application (Tkinter) for recording speech from two selected microphones with Push-to-Talk keys and automatic copying of recognized text to clipboard. Runs in the background with a system tray icon. Supports Polish and English, saves the last recording, and provides detailed logging.
 
-Uwaga: Rozpoznawanie odbywa się przez API Google Web Speech (wymaga internetu). Fragmenty audio są wysyłane do zewnętrznej usługi.
+Note: Recognition is performed via Google Web Speech API (requires internet). Audio fragments are sent to an external service.
 
-## Funkcje
+## Features
 
-- 2 niezależne kanały nagrywania (oddzielny mikrofon, klawisz PTT i język dla każdego)
-- Push‑to‑Talk: przytrzymaj klawisz, aby nagrywać; puść, aby rozpoznać i skopiować do schowka
-- Wybór mikrofonu z listy urządzeń wejściowych
-- Przełączanie języka rozpoznawania: pl-PL lub en-US (per kanał)
-- Ikona w zasobniku: Pokaż/Ukryj okno, Wyjdź
-- Zapis ostatniego nagrania WAV (opcjonalnie) i automatyczne odtwarzanie (opcjonalnie)
-- Konwersja wielokanałowego audio do mono (numpy) dla stabilniejszego rozpoznawania
-- Rozbudowane logi działania do pliku
+- 2 independent recording channels (separate microphone, PTT key, and language for each)
+- Push-to-Talk: hold key to record; release to recognize and copy to clipboard
+- Microphone selection from input device list
+- Language switching: pl-PL or en-US (per channel)
+- System tray icon: Show/Hide window, Exit
+- Optional WAV recording save (last recording) and optional automatic playback
+- Multi-channel audio conversion to mono (numpy) for more stable recognition
+- Detailed operation logs to file
 
-## Domyślne skróty
+## Default Shortcuts
 
-- Kanał 1: klawisz „5”
-- Kanał 2: klawisz „6”
-- ESC: schowaj okno do zasobnika
+- Channel 1: "5" key
+- Channel 2: "6" key
+- ESC: hide window to tray
 
-W GUI możesz zmienić klawisze PTT. Przytrzymaj, aby nagrywać; po puszczeniu nastąpi przetwarzanie.
+You can change PTT keys in the GUI. Hold to record; processing occurs after release.
 
-## Wymagania
+## Requirements
 
 - Python 3.8+
-- System: Windows (zalecane). Linux/macOS możliwe, ale:
-  - Linux: biblioteka keyboard może wymagać uprawnień root/uinput; PyAudio i pystray zależą od środowiska graficznego.
-  - macOS: uprawnienia do mikrofonu oraz dostępności (dla globalnych skrótów); pystray wymaga dodatkowych zależności (pyobjc).
+- System: Windows (recommended). Linux/macOS possible, but:
+  - Linux: keyboard library may require root/uinput permissions; PyAudio and pystray depend on graphical environment.
+  - macOS: microphone and accessibility permissions required (for global shortcuts); pystray requires additional dependencies (pyobjc).
 
-## Instalacja
+## Installation
 
-1) Zainstaluj zależności (najlepiej w wirtualnym środowisku):
+1) Install dependencies (preferably in a virtual environment):
 ```
 pip install -r requirements.txt
 ```
 
-Jeśli nie masz pliku requirements.txt, użyj:
+If you don't have a requirements.txt file, use:
 ```
 pip install SpeechRecognition pyperclip pyaudio keyboard pillow pystray numpy
 ```
 
-Uwaga dot. PyAudio:
-- Windows: polecam gotowe koła .whl z https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio, lub:
+Note about PyAudio:
+- Windows: I recommend pre-built wheels from https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio, or:
   ```
   pip install pipwin
   pipwin install pyaudio
   ```
-- Linux/macOS: może wymagać PortAudio:
+- Linux/macOS: may require PortAudio:
   - Debian/Ubuntu: sudo apt-get install portaudio19-dev && pip install pyaudio
   - macOS: brew install portaudio && pip install pyaudio
 
-2) Uruchom aplikację:
+2) Run the application:
 ```
-python app.py
+python Speech-to-Clipboard.py
 ```
 
-## Użytkowanie
+## Usage
 
-- Wybierz mikrofon dla każdego kanału w rozwijanej liście.
-- Ustaw język (Polski/Angielski) dla każdego kanału.
-- Kliknij przycisk z klawiszem PTT, aby ustawić własny skrót (naciśnij wybrany klawisz; ESC anuluje).
-- Przytrzymaj PTT, mów do wskazanego mikrofonu, puść – tekst trafi do schowka.
-- ESC chowa okno do zasobnika; zarządzaj z ikony (Pokaż/Wyjdź).
+- Select a microphone for each channel from the dropdown list.
+- Set the language (Polish/English) for each channel.
+- Click the PTT key button to set a custom shortcut (press the chosen key; ESC cancels).
+- Hold PTT, speak into the indicated microphone, release – text goes to clipboard.
+- ESC hides the window to tray; manage from icon (Show/Exit).
 
-Domyślnie aplikacja próbuje automatycznie przypisać urządzenia:
-- Kanał 1: nazwa mikrofonu zaczynająca się od „Voicemeeter Out B1”
-- Kanał 2: nazwa mikrofonu zaczynająca się od „CABLE Output”
-Jeśli ich nie ma, wybierze pierwsze dostępne różne wejścia.
+By default, the application tries to automatically assign devices:
+- Channel 1: microphone name starting with "Voicemeeter Out B1"
+- Channel 2: microphone name starting with "CABLE Output"
+If not found, it will select the first available different inputs.
 
-## Pliki i logi
+## Files and Logs
 
-- Log działania: speech_to_clipboard_log.txt
-- Ostatnie nagrania: last_recording_ch1.wav, last_recording_ch2.wav (jeśli włączone)
-- Ikony: _internal/wafflin.ico (okno), _internal/tray_icon.png (zasobnik)
+- Operation log: speech_to_clipboard_log.txt
+- Last recordings: last_recording_ch1.wav, last_recording_ch2.wav (if enabled)
+- Icons: _internal/wafflin.ico (window), _internal/tray_icon.png (tray)
 
-## Konfiguracja (stałe na początku pliku)
+## Configuration (constants at the beginning of file)
 
-W pliku źródłowym możesz zmienić:
+In the source file you can change:
 ```
 LOG_FILE_NAME = "speech_to_clipboard_log.txt"
 SAVE_LAST_RECORDING = True
@@ -88,75 +88,75 @@ CHUNK_SIZE = 1024
 AUDIO_FORMAT = pyaudio.paInt16
 ```
 
-- SAVE_LAST_RECORDING: zapisuje ostatnie nagranie WAV per kanał
-- PLAY_LAST_RECORDING: automatycznie odtwarza zapis po nagraniu
-- DELAY_AFTER_KEY_RELEASE_MS: opóźnienie po puszczeniu klawisza przed przetwarzaniem (ms)
+- SAVE_LAST_RECORDING: saves last WAV recording per channel
+- PLAY_LAST_RECORDING: automatically plays recording after capture
+- DELAY_AFTER_KEY_RELEASE_MS: delay after key release before processing (ms)
 
-## Architektura (skrót)
+## Architecture (Overview)
 
-- PttChannel: klasa obsługująca pojedynczy kanał (urządzenie audio, PTT, język, nagrywanie, zapis, rozpoznawanie)
-  - Otwiera strumień PyAudio (preferencyjnie 1 kanał; fallback do 2)
-  - Zbiera ramki audio; po zakończeniu scala i konwertuje do mono (numpy)
-  - Tworzy sr.AudioData i wywołuje recognizer.recognize_google(language=...)
-  - Kopiuje wynik do schowka
-- SpeechToClipboardApp: GUI (Tkinter), lista urządzeń, obsługa skrótów (keyboard), ikona zasobnika (pystray), logika aplikacji
+- PttChannel: class handling a single channel (audio device, PTT, language, recording, saving, recognition)
+  - Opens PyAudio stream (preferably 1 channel; fallback to 2)
+  - Collects audio frames; after completion, merges and converts to mono (numpy)
+  - Creates sr.AudioData and calls recognizer.recognize_google(language=...)
+  - Copies result to clipboard
+- SpeechToClipboardApp: GUI (Tkinter), device list, shortcut handling (keyboard), tray icon (pystray), application logic
 
-## Budowanie EXE (Windows, PyInstaller)
+## Building EXE (Windows, PyInstaller)
 
-Z uwagi na resource_path i folder _internal, dodaj pliki zasobów:
+Due to resource_path and _internal folder, add resource files:
 ```
-pyinstaller -F -w app.py ^
+pyinstaller -F -w Speech-to-Clipboard.py ^
   --name "Speech-to-Clipboard" ^
   --add-data "_internal/tray_icon.png;_internal" ^
   --add-data "_internal/wafflin.ico;_internal"
 ```
 
-Na macOS/Linux użyj dwukropka zamiast średnika:
+On macOS/Linux use colon instead of semicolon:
 ```
 --add-data "_internal/tray_icon.png:_internal" --add-data "_internal/wafflin.ico:_internal"
 ```
 
-## Rozwiązywanie problemów
+## Troubleshooting
 
-- Brak dźwięku / błąd PyAudio:
-  - Upewnij się, że mikrofon jest wybrany i dostępny (Panel sterowania / Ustawienia)
-  - Zmień mikrofon w GUI i spróbuj ponownie
-  - Zainstaluj poprawnie PyAudio/PortAudio
+- No sound / PyAudio error:
+  - Make sure the microphone is selected and available (Control Panel / Settings)
+  - Change microphone in GUI and try again
+  - Install PyAudio/PortAudio correctly
 
-- Nic się nie wpisuje do schowka:
-  - Sprawdź log: speech_to_clipboard_log.txt
-  - Sprawdź uprawnienia do mikrofonu i połączenie z internetem
-  - Zwiększ DELAY_AFTER_KEY_RELEASE_MS (czas na domknięcie bufora)
+- Nothing is copied to clipboard:
+  - Check log: speech_to_clipboard_log.txt
+  - Check microphone permissions and internet connection
+  - Increase DELAY_AFTER_KEY_RELEASE_MS (time to close buffer)
 
-- Skróty nie działają:
-  - Linux: uruchom z sudo lub skonfiguruj uinput
-  - macOS: nadaj uprawnienia Dostępność dla terminala/aplikacji Pythona
+- Shortcuts not working:
+  - Linux: run with sudo or configure uinput
+  - macOS: grant Accessibility permissions for terminal/Python application
 
-- Błąd „Google API”:
-  - Problemy sieciowe lub ograniczenia API. Spróbuj ponownie później.
+- "Google API" error:
+  - Network issues or API limitations. Try again later.
 
-## Bezpieczeństwo i prywatność
+## Security and Privacy
 
-- Rozpoznawanie wykorzystuje Google Web Speech – wysyła dźwięk do usługi zewnętrznej.
-- Nie wysyłaj poufnych danych głosowych, jeśli to nieakceptowalne.
+- Recognition uses Google Web Speech – sends audio to an external service.
+- Do not send confidential voice data if this is unacceptable.
 
-## Licencja
+## License
 
-Wstaw tu wybraną licencję (np. MIT).
+Insert your chosen license here (e.g., MIT).
 
-## Podziękowania
+## Acknowledgments
 
 - speech_recognition (Google Web Speech)
 - PyAudio/PortAudio
 - keyboard, pystray, Pillow, numpy, Tkinter
 
-## Minimalny przykład uruchomienia
+## Minimal Quick Start
 
 ```
 git clone <repo>
 cd <repo>
-pip install -r requirements.txt
-python app.py
+pip install SpeechRecognition pyperclip pyaudio keyboard pillow pystray numpy
+python Speech-to-Clipboard.py
 ```
 
-Gotowe. Przytrzymuj PTT, mów, puść - tekst trafi do schowka.
+Done. Hold PTT, speak, release - text goes to clipboard.
