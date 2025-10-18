@@ -159,4 +159,4 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Gotowe. Przytrzymuj PTT, mów, puść — tekst trafi do schowka.
+Gotowe. Przytrzymuj PTT, mów, puść - tekst trafi do schowka.
