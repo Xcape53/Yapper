@@ -1,0 +1,1 @@
+pyinstaller --name "SpeechToClipboard" --onefile --windowed --icon="_internal/wafflin.ico" --add-data "_internal;_internal" Speech-to-Clipboard.py

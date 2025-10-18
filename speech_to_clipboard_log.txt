@@ -1,0 +1,37 @@
+[2025-07-04 02:57:32] Uruchamianie Speech-to-Clipboard v3 (z debugowaniem kanałów)
+[2025-07-04 02:57:32] Inicjalizacja PyAudio...
+[2025-07-04 02:57:33] Znaleziono 56 urządzeń wejściowych.
+[2025-07-04 02:57:33] STATUS_LOG: CH 1: Używany mikrofon: Voicemeeter Out B1 (VB-Audio Vo
+[2025-07-04 02:57:33] STATUS_LOG: CH 2: Używany mikrofon: CABLE Output (VB-Audio Virtual 
+[2025-07-04 02:57:33] Uruchamianie ikony w zasobniku systemowym.
+[2025-07-04 02:57:35] Okno schowane do zasobnika.
+[2025-07-04 03:05:21] STATUS_LOG: [Kanał 1] >>> Nagrywanie...
+[2025-07-04 03:05:21] CH 1: Próba otwarcia strumienia z 1 kanałem/ami...
+[2025-07-04 03:05:21] CH 1: SUKCES. Strumień otwarty z 1 kanałem/ami.
+[2025-07-04 03:05:23] CH 1: Pętla nagrywania zakończona.
+[2025-07-04 03:05:24] STATUS_LOG: [Kanał 1] >>> Przetwarzanie...
+[2025-07-04 03:05:24] CH 1: Zakończono nagrywanie. Rozmiar danych: 204800 bajtów. Kanały nagrania: 1.
+[2025-07-04 03:05:24] CH 1: Zapisywanie audio (jako mono) do: C:\Users\user\PycharmProjects\pythonProject2\last_recording_ch1.wav
+[2025-07-04 03:05:24] CH 1: Próba rozpoznania mowy z parametrami: sample_rate=44100, sample_width=2
+[2025-07-04 03:05:24] STATUS_LOG: [Kanał 1] Rozpoznano: halo halo Mówię coś
+[2025-07-04 03:05:34] STATUS_LOG: [Kanał 2] >>> Nagrywanie...
+[2025-07-04 03:05:34] CH 2: Próba otwarcia strumienia z 1 kanałem/ami...
+[2025-07-04 03:05:34] CH 2: SUKCES. Strumień otwarty z 1 kanałem/ami.
+[2025-07-04 03:05:36] CH 2: Pętla nagrywania zakończona.
+[2025-07-04 03:05:36] STATUS_LOG: [Kanał 2] >>> Przetwarzanie...
+[2025-07-04 03:05:36] CH 2: Zakończono nagrywanie. Rozmiar danych: 147456 bajtów. Kanały nagrania: 1.
+[2025-07-04 03:05:36] CH 2: Zapisywanie audio (jako mono) do: C:\Users\user\PycharmProjects\pythonProject2\last_recording_ch2.wav
+[2025-07-04 03:05:36] CH 2: Próba rozpoznania mowy z parametrami: sample_rate=44100, sample_width=2
+[2025-07-04 03:05:37] STATUS_LOG: [Kanał 2] Nie udało się rozpoznać mowy.
+[2025-07-04 03:05:37] CH 2: Błąd rozpoznawania - sr.UnknownValueError (API nie znalazło mowy).
+[2025-07-04 03:05:41] STATUS_LOG: [Kanał 2] >>> Nagrywanie...
+[2025-07-04 03:05:41] CH 2: Próba otwarcia strumienia z 1 kanałem/ami...
+[2025-07-04 03:05:41] CH 2: SUKCES. Strumień otwarty z 1 kanałem/ami.
+[2025-07-04 03:05:45] CH 2: Pętla nagrywania zakończona.
+[2025-07-04 03:05:45] STATUS_LOG: [Kanał 2] >>> Przetwarzanie...
+[2025-07-04 03:05:45] CH 2: Zakończono nagrywanie. Rozmiar danych: 346112 bajtów. Kanały nagrania: 1.
+[2025-07-04 03:05:45] CH 2: Zapisywanie audio (jako mono) do: C:\Users\user\PycharmProjects\pythonProject2\last_recording_ch2.wav
+[2025-07-04 03:05:45] CH 2: Próba rozpoznania mowy z parametrami: sample_rate=44100, sample_width=2
+[2025-07-04 03:05:46] STATUS_LOG: [Kanał 2] Rozpoznano: to co śpiewają raperzy też nie rozumiesz A słuchają
+[2025-07-04 03:08:25] Rozpoczęto zamykanie aplikacji.
+[2025-07-04 03:08:25] Listener klawiatury zatrzymany.

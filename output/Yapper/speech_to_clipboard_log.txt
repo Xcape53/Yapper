@@ -1,0 +1,53 @@
+[2025-07-04 02:32:18] Uruchamianie Speech-to-Clipboard
+[2025-07-04 02:32:18] Inicjalizacja PyAudio...
+[2025-07-04 02:32:19] PyAudio zainicjalizowane pomyślnie.
+[2025-07-04 02:32:19] STATUS_LOG: Wyszukiwanie mikrofonów...
+[2025-07-04 02:32:19] STATUS_LOG: Używany mikrofon: Voicemeeter Out B1 (VB-Audio Vo (R: 16000, C: 8)
+[2025-07-04 02:32:19] STATUS_LOG: Gotowy. Naciśnij '5'.
+[2025-07-04 02:32:19] setup_tray_icon: Uruchamianie wątku dla ikony zasobnika.
+[2025-07-04 02:32:19] Ikona zasobnika utworzona, uruchamiam pystray.Icon.run()...
+[2025-07-04 02:32:25] Akcja: Pokaż okno z menu zasobnika.
+[2025-07-04 02:32:25] Okno powinno być widoczne.
+[2025-07-04 02:32:33] STATUS_LOG: >>> Nagrywanie...
+[2025-07-04 02:32:33] Strumień PyAudio otwarty z 1 kanałem/kanałami.
+[2025-07-04 02:32:33] Pętla nagrywania audio AKTYWNA (kanały: 1).
+[2025-07-04 02:32:35] STATUS_LOG: >>> Przetwarzanie...
+[2025-07-04 02:32:35] Zapisywanie audio do: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav
+[2025-07-04 02:32:35] Audio zapisane: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav, Rozmiar: 51200 bajtów, Kanały: 1, Rate: 16000, Width: 2
+[2025-07-04 02:32:35] STATUS_LOG: Rozpoznano: halo halo
+[2025-07-04 02:32:37] STATUS_LOG: Gotowy. Naciśnij '5'.
+[2025-07-04 02:32:46] STATUS_LOG: >>> Nagrywanie...
+[2025-07-04 02:32:46] Strumień PyAudio otwarty z 1 kanałem/kanałami.
+[2025-07-04 02:32:46] Pętla nagrywania audio AKTYWNA (kanały: 1).
+[2025-07-04 02:32:48] STATUS_LOG: >>> Przetwarzanie...
+[2025-07-04 02:32:48] Zapisywanie audio do: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav
+[2025-07-04 02:32:48] Audio zapisane: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav, Rozmiar: 51200 bajtów, Kanały: 1, Rate: 16000, Width: 2
+[2025-07-04 02:32:49] STATUS_LOG: Rozpoznano: halo halo
+[2025-07-04 02:32:50] STATUS_LOG: Gotowy. Naciśnij '5'.
+[2025-07-04 02:35:29] Polecenie: Schowaj okno do zasobnika
+[2025-07-04 02:35:29] Okno schowane.
+[2025-07-04 02:35:31] Akcja: Pokaż okno z menu zasobnika.
+[2025-07-04 02:35:31] Okno powinno być widoczne.
+[2025-07-04 02:35:34] Polecenie: Schowaj okno do zasobnika
+[2025-07-04 02:35:34] Okno schowane.
+[2025-07-04 02:35:39] STATUS_LOG: >>> Nagrywanie...
+[2025-07-04 02:35:39] Strumień PyAudio otwarty z 1 kanałem/kanałami.
+[2025-07-04 02:35:39] Pętla nagrywania audio AKTYWNA (kanały: 1).
+[2025-07-04 02:35:41] STATUS_LOG: >>> Przetwarzanie...
+[2025-07-04 02:35:41] Zapisywanie audio do: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav
+[2025-07-04 02:35:41] Audio zapisane: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav, Rozmiar: 61440 bajtów, Kanały: 1, Rate: 16000, Width: 2
+[2025-07-04 02:35:42] STATUS_LOG: Rozpoznano: halo halo mówię mówię mówię mówię
+[2025-07-04 02:35:44] STATUS_LOG: Gotowy. Naciśnij '5'.
+[2025-07-04 02:35:57] STATUS_LOG: >>> Nagrywanie...
+[2025-07-04 02:35:57] Strumień PyAudio otwarty z 1 kanałem/kanałami.
+[2025-07-04 02:35:57] Pętla nagrywania audio AKTYWNA (kanały: 1).
+[2025-07-04 02:36:01] STATUS_LOG: >>> Przetwarzanie...
+[2025-07-04 02:36:01] Zapisywanie audio do: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav
+[2025-07-04 02:36:01] Audio zapisane: C:\Users\user\PycharmProjects\pythonProject2\output\Yapper\last_recording_mono.wav, Rozmiar: 129024 bajtów, Kanały: 1, Rate: 16000, Width: 2
+[2025-07-04 02:36:02] STATUS_LOG: Rozpoznano: Dodaj więcej logowania może się zredukuje kodzik
+[2025-07-04 02:36:04] STATUS_LOG: Gotowy. Naciśnij '5'.
+[2025-07-04 02:38:04] Akcja: Wyjdź z menu zasobnika.
+[2025-07-04 02:38:04] Potwierdzono zamknięcie aplikacji.
+[2025-07-04 02:38:04] Zatrzymywanie ikony zasobnika...
+[2025-07-04 02:38:04] Pętla GUI zakończona.
+[2025-07-04 02:38:04] Program zakończony.
