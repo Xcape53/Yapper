@@ -130,7 +130,6 @@ On macOS/Linux use colon instead of semicolon:
 
 - Shortcuts not working:
   - Linux: run with sudo or configure uinput
-  - macOS: grant Accessibility permissions for terminal/Python application
 
 - "Google API" error:
   - Network issues or API limitations. Try again later.
@@ -138,11 +137,6 @@ On macOS/Linux use colon instead of semicolon:
 ## Security and Privacy
 
 - Recognition uses Google Web Speech – sends audio to an external service.
-- Do not send confidential voice data if this is unacceptable.
-
-## License
-
-Insert your chosen license here (e.g., MIT).
 
 ## Acknowledgments
 
