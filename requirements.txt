@@ -1,0 +1,17 @@
+PyQt6>=6.5.0
+pyaudio>=0.2.13
+keyboard>=0.13.5
+pyperclip>=1.8.2
+SpeechRecognition>=3.10.0
+numpy>=1.24.0
+Pillow>=10.0.0
+pystray>=0.19.4
+python-dotenv>=1.0.0
+
+# Optional - Vertex AI / Gemini
+google-cloud-aiplatform>=1.38.0
+google-auth-oauthlib>=1.1.0
+vertexai>=1.38.0
+
+# Optional - Offline speech recognition
+vosk>=0.3.45
