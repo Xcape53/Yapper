@@ -325,3 +325,281 @@ def log_message(message):
             f.write(log_entry + "\n")
     except Exception as e:
         print(f"BLAD ZAPISU LOGA: {e}")
+
+
+class SignalBridge(QObject):
+    """Most do komunikacji miedzy watkami a GUI Qt."""
+    status_changed = pyqtSignal(str)
+    ready_signal = pyqtSignal()
+    stop_recording_ch1 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 1
+    stop_recording_ch2 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 2
+
+
+class PttChannel:
+    """Zarzadza jednym kanalem Push-to-Talk."""
+
+    def __init__(self, channel_id, app, initial_ptt_key, initial_lang, target_mic_name_start=""):
+        self.id = channel_id
+        self.app = app
+        self.ptt_activation_key = initial_ptt_key
+        self.ptt_key_is_keypad = True if initial_ptt_key.isdigit() else False
+        self.current_lang_code = initial_lang
+
+        self.mic_details = {"index": None, "name": "Nie wybrano", "sample_rate": 16000, "channels": 1,
+                            "sample_width": 2}
+        self.target_mic_name_start = target_mic_name_start.lower()
+
+        self.is_recording_active = False
+        self.ptt_key_pressed = False
+        self.pyaudio_stream = None
+        self.audio_frames = []
+        self.current_recording_actual_channels = 1
+
+        # Elementy GUI (Qt)
+        self.lang_combo = None
+        self.mic_combo = None
+        self.ptt_button = None
+
+    def update_status(self, message):
+        self.app.update_status(f"[Kanal {self.id}] {message}")
+
+    def start_recording(self):
+        # Ignoruj jesli juz nagrywamy lub program sie zamyka
+        if stop_program_event.is_set() or self.is_recording_active or self.app.is_any_recording_active:
+            return
+
+        if self.mic_details.get("index") is None:
+            self.update_status("BLAD: Wybierz mikrofon!")
+            return
+
+        self.ptt_key_pressed = True
+        self.is_recording_active = True
+        self.app.is_any_recording_active = True
+        
+        # Dzwiek startu
+        self.app._play_sound("press")
+        
+        self.update_status("Nagrywanie...")
+        threading.Thread(target=self.record_audio_loop, daemon=True).start()
+
+    def stop_recording_and_process(self):
+        # Natychmiast resetuj flage klawisza
+        if not self.ptt_key_pressed:
+            return
+        
+        self.ptt_key_pressed = False
+        
+        if stop_program_event.is_set() or not self.is_recording_active:
+            return
+
+        # Wyslij sygnal do glownego watku Qt
+        if self.id == "1":
+            self.app.signal_bridge.stop_recording_ch1.emit()
+        else:
+            self.app.signal_bridge.stop_recording_ch2.emit()
+
+    def _actual_stop_and_process(self):
+        if not self.is_recording_active:
+            return
+
+        # Zatrzymaj nagrywanie
+        self.is_recording_active = False
+        self.app.is_any_recording_active = False
+
+        # Dzwiek stopu
+        self.app._play_sound("release")
+
+        # Poczekaj az watek nagrywania sie zakonczy
+        time.sleep(0.15)
+
+        self.update_status("Przetwarzanie...")
+
+        if not self.audio_frames:
+            self.update_status("Nie nagrano dzwieku.")
+            self.app.set_ready_status()
+            return
+
+        recorded_audio_data = b''.join(self.audio_frames)
+        self.audio_frames = []
+
+        log_message(f"CH {self.id}: Zakonczono nagrywanie. Rozmiar: {len(recorded_audio_data)} bajtow.")
+
+        if self.current_recording_actual_channels > 1:
+            log_message(f"CH {self.id}: Konwersja do mono.")
+            try:
+                audio_array = np.frombuffer(recorded_audio_data, dtype=np.int16)
+                audio_mono = audio_array[::self.current_recording_actual_channels]
+                recorded_audio_data = audio_mono.tobytes()
+            except Exception as e:
+                log_message(f"CH {self.id}: Blad konwersji do mono: {e}")
+                self.update_status("Blad konwersji audio.")
+                self.app.set_ready_status()
+                return
+
+        recording_filename = f"last_recording_ch{self.id}.wav"
+        if SAVE_LAST_RECORDING or PLAY_LAST_RECORDING:
+            self.save_and_play_audio(recorded_audio_data, recording_filename)
+
+        if len(recorded_audio_data) < 400:
+            self.update_status("Nagrano zbyt malo danych.")
+            self.app.set_ready_status()
+            return
+
+        # Przetwarzanie w osobnym watku
+        threading.Thread(target=self._process_audio, args=(recorded_audio_data,), daemon=True).start()
+
+    def _process_audio(self, recorded_audio_data):
+        """Przetwarzanie audio w osobnym watku."""
+        try:
+            audio_data_obj = sr.AudioData(recorded_audio_data, self.mic_details['sample_rate'],
+                                          self.mic_details['sample_width'])
+            
+            text = None
+            used_system = None
+            
+            selected = self.app.get_selected_model()
+            log_message(f"CH {self.id}: Wybrany model: {selected}")
+            
+            # --- GEMINI ---
+            if selected == "gemini" and VERTEX_AVAILABLE:
+                self.update_status("Gemini...")
+                gemini_start = time.time()
+                gemini_result = transcribe_with_gemini(
+                    recorded_audio_data, 
+                    self.mic_details['sample_rate'],
+                    self.current_lang_code
+                )
+                gemini_time = time.time() - gemini_start
+                text = gemini_result.get('text', '')
+                
+                if text:
+                    log_message(f"CH {self.id}: Gemini OK w {gemini_time:.2f}s")
+                    used_system = "Gemini"
+                else:
+                    error = gemini_result.get('error', 'Brak tekstu')
+                    log_message(f"CH {self.id}: Gemini nie rozpoznal: {error}")
+            
+            # --- GOOGLE ---
+            elif selected == "google":
+                self.update_status("Google Speech...")
+                try:
+                    google_start = time.time()
+                    text = recognizer.recognize_google(audio_data_obj, language=self.current_lang_code)
+                    google_time = time.time() - google_start
+                    log_message(f"CH {self.id}: Google OK w {google_time:.2f}s")
+                    used_system = "Google"
+                except sr.UnknownValueError:
+                    log_message(f"CH {self.id}: Google nie rozpoznal mowy")
+                except sr.RequestError as e:
+                    log_message(f"CH {self.id}: Google API blad: {e}")
+            
+            # --- VOSK ---
+            elif selected == "vosk" and VOSK_AVAILABLE:
+                self.update_status("Vosk (offline)...")
+                vosk_start = time.time()
+                vosk_result = transcribe_with_vosk(recorded_audio_data, self.mic_details['sample_rate'])
+                vosk_time = time.time() - vosk_start
+                text = vosk_result.get('text', '')
+                
+                if text:
+                    log_message(f"CH {self.id}: Vosk OK w {vosk_time:.2f}s")
+                    used_system = "Vosk"
+            
+            # --- FALLBACK ---
+            if not text and selected != "google":
+                self.update_status("Fallback: Google Speech...")
+                try:
+                    google_start = time.time()
+                    text = recognizer.recognize_google(audio_data_obj, language=self.current_lang_code)
+                    google_time = time.time() - google_start
+                    log_message(f"CH {self.id}: Google fallback OK w {google_time:.2f}s")
+                    used_system = "Google (fallback)"
+                except sr.UnknownValueError:
+                    log_message(f"CH {self.id}: Google fallback nie rozpoznal")
+                except sr.RequestError as e:
+                    log_message(f"CH {self.id}: Google fallback blad: {e}")
+            
+            # --- WYNIK ---
+            if text:
+                self.update_status(f"Rozpoznano [{used_system}]: {text}")
+                pyperclip.copy(text)
+            else:
+                self.update_status("Nie udalo sie rozpoznac mowy.")
+                log_message(f"CH {self.id}: Wszystkie systemy zawiodly")
+                    
+        except Exception as e:
+            self.update_status(f"Blad przetwarzania: {e}")
+            log_message(f"CH {self.id}: Blad podczas przetwarzania: {e}")
+
+        self.app.set_ready_status()
+
+    def record_audio_loop(self):
+        global pyaudio_instance
+
+        if self.mic_details.get("index") is None:
+            self.update_status("BLAD: Mikrofon nie jest skonfigurowany.")
+            self.is_recording_active = False
+            return
+
+        stream_opened_successfully = False
+        for target_ch in [1, 2, self.mic_details['channels']]:
+            if stream_opened_successfully: break
+            if target_ch == self.mic_details['channels'] and target_ch in [1, 2]:
+                continue
+
+            try:
+                log_message(f"CH {self.id}: Proba otwarcia strumienia z {target_ch} kanalem/ami...")
+                self.pyaudio_stream = pyaudio_instance.open(
+                    format=AUDIO_FORMAT, channels=target_ch,
+                    rate=self.mic_details['sample_rate'], input=True,
+                    frames_per_buffer=CHUNK_SIZE,
+                    input_device_index=self.mic_details['index'])
+                self.current_recording_actual_channels = target_ch
+                stream_opened_successfully = True
+                log_message(f"CH {self.id}: SUKCES. Strumien otwarty.")
+            except Exception as e:
+                log_message(f"CH {self.id}: BLAD otwarcia strumienia: {e}")
+
+        if not stream_opened_successfully:
+            self.update_status(f"BLAD: Nie mozna otworzyc strumienia audio.")
+            self.is_recording_active = False
+            self.app.is_any_recording_active = False
+            return
+
+        self.audio_frames = []
+        while self.is_recording_active and not stop_program_event.is_set():
+            try:
+                data = self.pyaudio_stream.read(CHUNK_SIZE, exception_on_overflow=False)
+                self.audio_frames.append(data)
+            except IOError:
+                pass
+            except Exception:
+                self.is_recording_active = False
+                break
+
+        if self.pyaudio_stream:
+            try:
+                if self.pyaudio_stream.is_active(): self.pyaudio_stream.stop_stream()
+                self.pyaudio_stream.close()
+            except Exception:
+                pass
+        self.pyaudio_stream = None
+        log_message(f"CH {self.id}: Petla nagrywania zakonczona.")
+
+    def save_and_play_audio(self, audio_data_bytes, filename):
+        channels_to_save = 1
+        filepath = os.path.join(os.getcwd(), filename)
+        try:
+            with wave.open(filepath, 'wb') as wf:
+                wf.setnchannels(channels_to_save)
+                wf.setsampwidth(self.mic_details['sample_width'])
+                wf.setframerate(self.mic_details['sample_rate'])
+                wf.writeframes(audio_data_bytes)
+
+            if PLAY_LAST_RECORDING:
+                if os.name == 'nt':
+                    os.startfile(filepath)
+                else:
+                    subprocess.call(["open" if sys.platform == "darwin" else "xdg-open", filepath])
+        except Exception as e:
+            log_message(f"CH {self.id}: Blad zapisu pliku: {e}")
