@@ -603,3 +603,242 @@ class PttChannel:
                     subprocess.call(["open" if sys.platform == "darwin" else "xdg-open", filepath])
         except Exception as e:
             log_message(f"CH {self.id}: Blad zapisu pliku: {e}")
+
+
+class SpeechToClipboardApp(QMainWindow):
+    """Glowne okno aplikacji PyQt6."""
+    
+    def __init__(self):
+        super().__init__()
+        
+        self.signal_bridge = SignalBridge()
+        self.signal_bridge.status_changed.connect(self._handle_signal)
+        self.signal_bridge.ready_signal.connect(self._set_ready)
+        
+        self.channel_being_configured = None
+        self.is_any_recording_active = False
+        self.all_input_mics_details = []
+        self.selected_model = "gemini"
+        self.sounds_enabled = True
+        self.sound_volume = 50  # Domyslna glosnosc 50%
+        
+        self.press_sound = QSoundEffect()
+        self.release_sound = QSoundEffect()
+        self._init_sounds()
+        
+        self.ptt_channels = {
+            "1": PttChannel(channel_id="1", app=self, initial_ptt_key="5", initial_lang="pl-PL",
+                            target_mic_name_start="Voicemeeter Out B1"),
+            "2": PttChannel(channel_id="2", app=self, initial_ptt_key="6", initial_lang="pl-PL",
+                            target_mic_name_start="CABLE Output")
+        }
+        
+        # Podlacz sygnaly stop_recording do kanalow
+        self.signal_bridge.stop_recording_ch1.connect(
+            lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["1"]._actual_stop_and_process)
+        )
+        self.signal_bridge.stop_recording_ch2.connect(
+            lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["2"]._actual_stop_and_process)
+        )
+        
+        self.init_ui()
+        
+    def init_ui(self):
+        """Inicjalizacja interfejsu uzytkownika."""
+        self.setWindowTitle("Yapper")
+        self.setMinimumSize(650, 550)
+        
+        # Ikona okna
+        try:
+            icon_path = resource_path("_internal/wafflin.ico")
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception:
+            pass
+        
+        # Glowny widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        
+        # --- Model transkrypcji ---
+        model_group = QGroupBox("Model transkrypcji")
+        model_layout = QVBoxLayout(model_group)
+        
+        models_row = QHBoxLayout()
+        self.model_button_group = QButtonGroup(self)
+        
+        # Gemini - domyslnie wylaczony, wlaczony w run() po inicjalizacji Vertex AI
+        self.gemini_radio = QRadioButton("Gemini (Vertex AI)")
+        self.gemini_radio.setEnabled(False)  # Wlaczony pozniej w run()
+        self.gemini_radio.toggled.connect(lambda checked: self._on_model_change("gemini") if checked else None)
+        self.model_button_group.addButton(self.gemini_radio)
+        models_row.addWidget(self.gemini_radio)
+        
+        # Google
+        self.google_radio = QRadioButton("Google Speech API")
+        self.google_radio.toggled.connect(lambda checked: self._on_model_change("google") if checked else None)
+        self.model_button_group.addButton(self.google_radio)
+        models_row.addWidget(self.google_radio)
+        
+        # Vosk
+        self.vosk_radio = QRadioButton("Vosk (offline)")
+        self.vosk_radio.setEnabled(VOSK_AVAILABLE)
+        self.vosk_radio.toggled.connect(lambda checked: self._on_model_change("vosk") if checked else None)
+        self.model_button_group.addButton(self.vosk_radio)
+        models_row.addWidget(self.vosk_radio)
+        
+        models_row.addStretch()
+        model_layout.addLayout(models_row)
+        
+        # Status dostepnosci - bedzie aktualizowany w run()
+        self.model_status_label = QLabel("Sprawdzanie dostepnosci...")
+        self.model_status_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
+        model_layout.addWidget(self.model_status_label)
+        
+        # Domyslnie Google dopoki Vertex AI nie zostanie sprawdzony
+        self.google_radio.setChecked(True)
+        self.selected_model = "google"
+        
+        main_layout.addWidget(model_group)
+        
+        # --- Kanaly PTT ---
+        for ch_id in self.ptt_channels:
+            channel_group = self._create_channel_ui(ch_id)
+            main_layout.addWidget(channel_group)
+        
+        # --- Custom Rules ---
+        rules_group = QGroupBox("Custom Rules (Gemini)")
+        rules_layout = QVBoxLayout(rules_group)
+        rules_layout.setSpacing(4)
+        rules_layout.setContentsMargins(8, 6, 8, 8)
+        
+        help_label = QLabel("Wpisz reguly (jedna na linie). Linie z # sa ignorowane.")
+        help_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
+        rules_layout.addWidget(help_label)
+        
+        self.rules_text = QTextEdit()
+        self.rules_text.setPlainText(DEFAULT_CUSTOM_RULES)
+        self.rules_text.setMinimumHeight(90)
+        self.rules_text.setMaximumHeight(110)
+        self.rules_text.textChanged.connect(self._update_custom_rules)
+        rules_layout.addWidget(self.rules_text)
+        
+        main_layout.addWidget(rules_group)
+        
+        # --- Dolny rzad (Dzwieki i Status) ---
+        bottom_row_layout = QHBoxLayout()
+        
+        # --- Dzwieki ---
+        sounds_group = QGroupBox("Dzwieki")
+        sounds_layout = QHBoxLayout(sounds_group)
+        sounds_layout.setContentsMargins(8, 6, 8, 8)
+        
+        self.sounds_checkbox = QCheckBox("Wlacz dzwieki PTT")
+        self.sounds_checkbox.setChecked(True)
+        self.sounds_checkbox.toggled.connect(self._toggle_sounds)
+        self.sounds_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #e0e0e0;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #5a5a8a;
+                background: #2a2a45;
+            }
+            QCheckBox::indicator:checked {
+                background: #6c6cff;
+                border: 1px solid #6c6cff;
+                image: url(:/qt-project.org/styles/commonstyle/images/standardbutton-yes-16.png);
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #7c7cff;
+            }
+        """)
+        sounds_layout.addWidget(self.sounds_checkbox)
+        
+        # Suwak glosnosci
+        vol_label = QLabel("Glosnosc:")
+        vol_label.setStyleSheet("color: #d0d0d0; margin-left: 20px;")
+        sounds_layout.addWidget(vol_label)
+        
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(self.sound_volume)
+        self.volume_slider.setFixedWidth(120)  # Mniejszy suwak
+        self.volume_slider.valueChanged.connect(self._on_volume_change)
+        self.volume_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #3a3a5c;
+                height: 8px;
+                background: #2a2a45;
+                margin: 2px 0;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #6c6cff;
+                border: 1px solid #6c6cff;
+                width: 18px;
+                height: 18px;
+                margin: -5px 0;
+                border-radius: 9px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #7c7cff;
+            }
+        """)
+        sounds_layout.addWidget(self.volume_slider)
+        
+        # Etykieta z procentami
+        self.volume_percent_label = QLabel(f"{self.sound_volume}%")
+        self.volume_percent_label.setStyleSheet("color: #a8b4ff; font-weight: bold; min-width: 35px; margin-left: 5px;")
+        sounds_layout.addWidget(self.volume_percent_label)
+        
+        sounds_layout.addStretch()  # Wyrownanie do lewej
+        
+        bottom_row_layout.addWidget(sounds_group, 1)
+        
+        # --- Status i Zapisz ---
+        status_group = QGroupBox("Status")
+        status_layout = QHBoxLayout(status_group)
+        status_layout.setContentsMargins(8, 6, 8, 8)
+        
+        self.status_label = QLabel("Inicjalizacja...")
+        self.status_label.setWordWrap(True)
+        status_layout.addWidget(self.status_label, 1)
+        
+        # Przycisk zapisu konfiguracji
+        save_config_btn = QPushButton("Zapisz konfiguracje")
+        save_config_btn.setFixedWidth(150)
+        save_config_btn.setToolTip("Zapisz wszystkie ustawienia do pliku")
+        save_config_btn.clicked.connect(self._save_settings)
+        status_layout.addWidget(save_config_btn)
+        
+        bottom_row_layout.addWidget(status_group, 1)
+        
+        main_layout.addLayout(bottom_row_layout)
+        
+        # --- Instrukcje PTT ---
+        self.ptt_instruction_label = QLabel()
+        self.ptt_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ptt_instruction_label.setStyleSheet("""
+            font-size: 12px;
+            padding: 8px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #252542, stop:1 #1f1f38);
+            border: 1px solid #3a3a5c;
+            border-radius: 8px;
+            color: #b0b0d0;
+        """)
+        main_layout.addWidget(self.ptt_instruction_label)
+        
+        # Rozciagnij reszte
+        main_layout.addStretch()
+        
+        # Inicjalizacja custom rules
+        self._update_custom_rules()
