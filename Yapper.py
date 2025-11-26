@@ -1119,3 +1119,261 @@ class SpeechToClipboardApp(QMainWindow):
         """Aktualizuje globalna zmienna custom rules."""
         global custom_rules_text
         custom_rules_text = self.rules_text.toPlainText()
+    
+    def update_status(self, message):
+        """Aktualizuje status (thread-safe)."""
+        self.signal_bridge.status_changed.emit(message)
+        log_message(f"STATUS: {message}")
+    
+    def _handle_signal(self, message):
+        """Obsluguje sygnaly z innych watkow."""
+        if message == "SHOW_WINDOW":
+            self.show_from_tray()
+        elif message == "QUIT_APP":
+            self.quit_application()
+        else:
+            self.status_label.setText(message)
+    
+    def set_ready_status(self, delay_ms=1500):
+        """Ustawia status gotowosci po opoznieniu (thread-safe)."""
+        # Wyslij sygnal do glownego watku - QTimer tam obsluzony
+        self.signal_bridge.ready_signal.emit()
+    
+    def _set_ready(self):
+        """Slot ustawiajacy status gotowosci."""
+        self._update_ptt_instruction_text()
+        self.status_label.setText("Gotowy.")
+    
+    def _update_ptt_instruction_text(self):
+        """Aktualizuje tekst instrukcji PTT."""
+        ch1 = self.ptt_channels["1"]
+        ch2 = self.ptt_channels["2"]
+        text = (f"Kanal 1 ('{ch1.ptt_activation_key.upper()}'): Nagrywaj | "
+                f"Kanal 2 ('{ch2.ptt_activation_key.upper()}'): Nagrywaj\n"
+                f"Pusc by przetworzyc. ESC by schowac do zasobnika.")
+        self.ptt_instruction_label.setText(text)
+    
+    def initialize_audio(self):
+        """Inicjalizuje PyAudio i wykrywa mikrofony."""
+        global pyaudio_instance
+        log_message("Inicjalizacja PyAudio...")
+        try:
+            pyaudio_instance = pyaudio.PyAudio()
+            num_devices = pyaudio_instance.get_device_count()
+            for i in range(num_devices):
+                dev_info = pyaudio_instance.get_device_info_by_index(i)
+                if dev_info.get('maxInputChannels') > 0:
+                    self.all_input_mics_details.append({
+                        'index': i, 
+                        'name': dev_info.get('name', f"Urzadzenie {i}"),
+                        'sample_rate': int(dev_info.get('defaultSampleRate', 16000)),
+                        'channels': int(dev_info.get('maxInputChannels', 1)),
+                        'sample_width': pyaudio_instance.get_sample_size(AUDIO_FORMAT)
+                    })
+            log_message(f"Znaleziono {len(self.all_input_mics_details)} urzadzen wejsciowych.")
+            return True
+        except Exception as e:
+            log_message(f"KRYTYCZNY BLAD: Nie mozna zainicjalizowac PyAudio: {e}")
+            QMessageBox.critical(self, "Blad PyAudio", 
+                                f"Nie mozna zainicjalizowac PyAudio: {e}\nProgram nie moze dzialac.")
+            return False
+    
+    def populate_mic_comboboxes(self):
+        """Wypelnia combobox'y mikrofonow."""
+        log_message(f"populate_mic_comboboxes: {len(self.all_input_mics_details)} mikrofonow")
+        available_mics = [f"{mic['name']} (Indeks: {mic['index']})" for mic in self.all_input_mics_details]
+        used_indices = set()
+
+        for ch_id, channel in self.ptt_channels.items():
+            log_message(f"CH {ch_id}: mic_combo = {channel.mic_combo}")
+            if channel.mic_combo is None: 
+                log_message(f"CH {ch_id}: BRAK mic_combo!")
+                continue
+
+            channel.mic_combo.clear()
+            channel.mic_combo.addItems(available_mics)
+            log_message(f"CH {ch_id}: Dodano {len(available_mics)} mikrofonow do combobox")
+
+            selected_mic = None
+            if channel.target_mic_name_start:
+                log_message(f"CH {ch_id}: Szukam mikrofonu zaczynajacego sie od: {channel.target_mic_name_start}")
+                for mic in self.all_input_mics_details:
+                    if mic['name'].lower().startswith(channel.target_mic_name_start) and mic['index'] not in used_indices:
+                        selected_mic = mic
+                        log_message(f"CH {ch_id}: Znaleziono preferowany: {mic['name']}")
+                        break
+
+            if not selected_mic:
+                for mic in self.all_input_mics_details:
+                    if mic['index'] not in used_indices:
+                        selected_mic = mic
+                        log_message(f"CH {ch_id}: Uzyje pierwszego wolnego: {mic['name']}")
+                        break
+
+            if not selected_mic and self.all_input_mics_details:
+                selected_mic = self.all_input_mics_details[0]
+                log_message(f"CH {ch_id}: Fallback do pierwszego: {selected_mic['name']}")
+
+            if selected_mic:
+                channel.mic_details = selected_mic.copy()  # Pelna kopia
+                used_indices.add(selected_mic['index'])
+                idx = self.all_input_mics_details.index(selected_mic)
+                channel.mic_combo.setCurrentIndex(idx)
+                log_message(f"CH {ch_id}: Mikrofon ustawiony: {selected_mic['name']} (index={selected_mic['index']})")
+            else:
+                log_message(f"CH {ch_id}: BLAD - nie znaleziono mikrofonu!")
+    
+    def keyboard_listener_thread_func(self):
+        """Watek nasluchujacy klawiatury."""
+        def key_event_handler(event: keyboard.KeyboardEvent):
+            if stop_program_event.is_set(): 
+                return
+
+            if self.channel_being_configured and event.event_type == keyboard.KEY_DOWN:
+                channel_to_configure = self.channel_being_configured
+                self.channel_being_configured = None
+                if event.name != 'esc':
+                    channel_to_configure.ptt_activation_key = event.name
+                    channel_to_configure.ptt_key_is_keypad = hasattr(event, 'is_keypad') and event.is_keypad
+                    if channel_to_configure.ptt_button:
+                        channel_to_configure.ptt_button.setText(event.name.upper())
+                    self._update_ptt_instruction_text()
+                else:
+                    self.update_status(f"Anulowano zmiane klawisza dla kanalu {channel_to_configure.id}.")
+                return
+
+            for channel in self.ptt_channels.values():
+                is_target_key = (event.name == channel.ptt_activation_key)
+                if is_target_key:
+                    if event.event_type == keyboard.KEY_DOWN:
+                        # Ignoruj key repeat - tylko pierwszy KEY_DOWN
+                        if not channel.ptt_key_pressed:
+                            channel.start_recording()
+                    elif event.event_type == keyboard.KEY_UP:
+                        channel.stop_recording_and_process()
+                    return
+
+            if event.name == 'esc' and event.event_type == keyboard.KEY_DOWN:
+                self.signal_bridge.status_changed.emit("HIDE_WINDOW")
+
+        keyboard.hook(key_event_handler)
+        stop_program_event.wait()
+        keyboard.unhook_all()
+        log_message("Listener klawiatury zatrzymany.")
+    
+    def hide_to_tray(self):
+        """Chowa okno do zasobnika."""
+        self.hide()
+        log_message("Okno schowane do zasobnika.")
+    
+    def show_from_tray(self):
+        """Pokazuje okno z zasobnika."""
+        self.show()
+        self.activateWindow()
+        self.raise_()
+        log_message("Okno przywrocone z zasobnika.")
+    
+    def closeEvent(self, event):
+        """Obsluga zamkniecia okna - chowa do zasobnika."""
+        event.ignore()
+        self.hide_to_tray()
+    
+    def quit_application(self):
+        """Zamyka aplikacje."""
+        global pyaudio_instance, tray_icon
+        log_message("Rozpoczeto zamykanie aplikacji.")
+        stop_program_event.set()
+
+        if tray_icon:
+            tray_icon.stop()
+            tray_icon = None
+
+        if pyaudio_instance:
+            pyaudio_instance.terminate()
+            pyaudio_instance = None
+
+        for ch in self.ptt_channels.values():
+            ch.is_recording_active = False
+            if ch.pyaudio_stream:
+                try:
+                    ch.pyaudio_stream.close()
+                except:
+                    pass
+
+        QApplication.quit()
+        log_message("Aplikacja zakonczona.")
+    
+    def setup_tray_icon(self):
+        """Konfiguruje ikone w zasobniku systemowym."""
+        global tray_icon
+        
+        def run_tray():
+            try:
+                image = Image.open(resource_path("_internal/tray_icon.png"))
+            except Exception:
+                log_message("Nie mozna zaladowac ikony zasobnika, uzycie zastepczej.")
+                image = Image.new('RGB', (64, 64), 'black')
+
+            menu = (
+                pystray.MenuItem('Pokaz', lambda: self.signal_bridge.status_changed.emit("SHOW_WINDOW")),
+                pystray.MenuItem('Wyjdz', lambda: self.signal_bridge.status_changed.emit("QUIT_APP"))
+            )
+
+            global tray_icon
+            tray_icon = pystray.Icon("YapperTray", image, "Yapper", menu)
+            log_message("Uruchamianie ikony w zasobniku systemowym.")
+            tray_icon.run()
+            log_message("Ikona zasobnika zatrzymana.")
+        
+        tray_thread = threading.Thread(target=run_tray, daemon=True)
+        tray_thread.start()
+    
+    def run(self):
+        """Uruchamia aplikacje."""
+        if os.path.exists(LOG_FILE_NAME):
+            try:
+                os.remove(LOG_FILE_NAME)
+            except Exception:
+                pass
+        
+        log_message("Uruchamianie Yapper v4 (PyQt6)")
+        
+        # Inicjalizacja Vertex AI
+        if USE_GEMINI:
+            log_message("Inicjalizacja Vertex AI (Gemini)...")
+            if setup_vertex_ai():
+                log_message("Vertex AI gotowy do uzycia.")
+                self.gemini_radio.setEnabled(True)
+                self.gemini_radio.setChecked(True)  # Przelacz na Gemini
+                self.selected_model = "gemini"
+            else:
+                log_message("Vertex AI niedostepny - uzyje Google Speech API jako fallback.")
+                self.gemini_radio.setEnabled(False)
+        
+        # Aktualizuj status modeli
+        status_parts = []
+        status_parts.append(f"Gemini: {'OK' if VERTEX_AVAILABLE else 'niedostepny'}")
+        status_parts.append("Google: OK")
+        status_parts.append(f"Vosk: {'OK' if VOSK_AVAILABLE else 'niedostepny'}")
+        self.model_status_label.setText(" | ".join(status_parts))
+        
+        # Inicjalizacja audio
+        if self.initialize_audio():
+            self.populate_mic_comboboxes()
+            self._load_settings()  # Wczytaj zapisane ustawienia
+            self._update_ptt_instruction_text()
+            self.status_label.setText("Gotowy.")
+        else:
+            self.status_label.setText("Blad inicjalizacji audio. Zamykanie...")
+            QTimer.singleShot(3000, self.quit_application)
+            return
+        
+        # Uruchom listener klawiatury
+        kbd_thread = threading.Thread(target=self.keyboard_listener_thread_func, daemon=True)
+        kbd_thread.start()
+        
+        # Uruchom ikone zasobnika
+        self.setup_tray_icon()
+        
+        # Pokaz okno
+        self.show()
