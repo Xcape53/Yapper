@@ -842,3 +842,280 @@ class SpeechToClipboardApp(QMainWindow):
         
         # Inicjalizacja custom rules
         self._update_custom_rules()
+        
+    def _create_channel_ui(self, channel_id):
+        """Tworzy UI dla kanalu PTT."""
+        channel = self.ptt_channels[channel_id]
+        
+        group = QGroupBox(f"Kanal {channel_id}")
+        layout = QHBoxLayout(group)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 6, 10, 6)
+        
+        # Jezyk
+        lang_label = QLabel("Jezyk:")
+        layout.addWidget(lang_label)
+        
+        channel.lang_combo = QComboBox()
+        channel.lang_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Usuniecie scrollbara z listy rozwijanej
+        lang_view = QListView()
+        lang_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        lang_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        channel.lang_combo.setView(lang_view)
+        
+        # Próba naprawy czarnego tła przy zaokrąglonych rogach
+        try:
+            # Pobieramy kontener (QComboBoxPrivateContainer)
+            container = lang_view.parentWidget()
+            if container:
+                container.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
+                container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        except Exception:
+            pass
+        
+        channel.lang_combo.addItem("Polski", "pl-PL")
+        channel.lang_combo.addItem("Angielski", "en-US")
+        channel.lang_combo.setFixedWidth(90)
+        # Wymuszenie szerokosci popupu takiej samej jak combobox
+        lang_view.setFixedWidth(90)
+        for i in range(channel.lang_combo.count()):
+            if channel.lang_combo.itemData(i) == channel.current_lang_code:
+                channel.lang_combo.setCurrentIndex(i)
+                break
+        channel.lang_combo.currentIndexChanged.connect(
+            lambda idx, ch=channel: self._on_language_change(ch, ch.lang_combo.itemData(idx))
+        )
+        layout.addWidget(channel.lang_combo)
+        
+        # Mikrofon
+        mic_label = QLabel("Mikrofon:")
+        layout.addWidget(mic_label)
+        
+        channel.mic_combo = QComboBox()
+        channel.mic_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # Usuniecie scrollbara z listy rozwijanej
+        mic_view = QListView()
+        mic_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mic_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        channel.mic_combo.setView(mic_view)
+        
+        channel.mic_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        channel.mic_combo.currentIndexChanged.connect(
+            lambda idx, ch=channel: self._on_mic_select(ch)
+        )
+        layout.addWidget(channel.mic_combo, 1)  # stretch factor 1
+        
+        # Klawisz PTT
+        ptt_label = QLabel("PTT:")
+        layout.addWidget(ptt_label)
+        
+        channel.ptt_button = QPushButton(channel.ptt_activation_key.upper())
+        channel.ptt_button.setFixedWidth(70)
+        channel.ptt_button.clicked.connect(
+            lambda checked, ch_id=channel_id: self._activate_ptt_key_setting(ch_id)
+        )
+        layout.addWidget(channel.ptt_button)
+        
+        return group
+    
+    def _on_model_change(self, model):
+        """Zmiana modelu transkrypcji."""
+        self.selected_model = model
+        log_message(f"Zmieniono model na: {model}")
+    
+    def get_selected_model(self):
+        """Zwraca wybrany model."""
+        return self.selected_model
+    
+    def _on_language_change(self, channel, lang_code):
+        """Zmiana jezyka dla kanalu."""
+        channel.current_lang_code = lang_code
+        self.update_status(f"CH {channel.id}: Jezyk zmieniony na {lang_code}")
+    
+    def _on_mic_select(self, channel):
+        """Wybor mikrofonu dla kanalu."""
+        idx = channel.mic_combo.currentIndex()
+        if idx >= 0 and idx < len(self.all_input_mics_details):
+            mic = self.all_input_mics_details[idx]
+            channel.mic_details.update(mic)
+            self.update_status(f"CH {channel.id}: Zmieniono mikrofon na {mic['name']}")
+    
+    def _activate_ptt_key_setting(self, channel_id):
+        """Aktywacja trybu ustawiania klawisza PTT."""
+        self.channel_being_configured = self.ptt_channels[channel_id]
+        self.update_status(f"Dla kanalu {channel_id} wcisnij nowy klawisz PTT (ESC by anulowac)...")
+    
+    def _set_preset(self, preset_text):
+        """Ustawia preset custom rules."""
+        self.rules_text.setPlainText(preset_text)
+    
+    def _toggle_sounds(self, checked):
+        """Wlacza/wylacza dzwieki."""
+        self.sounds_enabled = checked
+        log_message(f"Dzwieki {'wlaczone' if checked else 'wylaczone'}")
+
+    def _on_volume_change(self, value):
+        """Zmiana glosnosci."""
+        self.sound_volume = value
+        if hasattr(self, 'volume_percent_label'):
+            self.volume_percent_label.setText(f"{value}%")
+        self._update_volume()
+
+    def _init_sounds(self):
+        """Inicjalizacja dzwiekow."""
+        try:
+            press_path = os.path.join(os.getcwd(), "sounds", "press.wav")
+            release_path = os.path.join(os.getcwd(), "sounds", "release.wav")
+            
+            if os.path.exists(press_path):
+                self.press_sound.setSource(QUrl.fromLocalFile(press_path))
+            if os.path.exists(release_path):
+                self.release_sound.setSource(QUrl.fromLocalFile(release_path))
+                
+            self._update_volume()
+        except Exception as e:
+            log_message(f"Blad inicjalizacji dzwiekow: {e}")
+
+    def _update_volume(self):
+        """Aktualizacja glosnosci efektow."""
+        vol = self.sound_volume / 100.0
+        self.press_sound.setVolume(vol)
+        self.release_sound.setVolume(vol)
+
+    def _play_sound(self, sound_type):
+        """Odtwarza dzwiek (press/release)."""
+        if not self.sounds_enabled:
+            return
+            
+        try:
+            if sound_type == "press":
+                if self.press_sound.status() == QSoundEffect.Status.Ready:
+                    self.press_sound.play()
+            else:
+                if self.release_sound.status() == QSoundEffect.Status.Ready:
+                    self.release_sound.play()
+        except Exception as e:
+            log_message(f"Blad odtwarzania dzwieku: {e}")
+
+    def _save_settings(self):
+        """Zapisuje ustawienia do pliku."""
+        try:
+            # Wczytaj istniejace ustawienia vertex_ai jesli istnieja
+            existing_vertex_config = {}
+            if os.path.exists(SETTINGS_FILE):
+                try:
+                    with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                        existing_vertex_config = existing.get("vertex_ai", {})
+                except Exception:
+                    pass
+            
+            # Jesli nie ma konfiguracji vertex_ai, stworz domyslna
+            if not existing_vertex_config:
+                existing_vertex_config = {
+                    "project_id": "",
+                    "location": "us-central1",
+                    "client_secret_file": ""
+                }
+            
+            settings = {
+                "model": self.selected_model,
+                "custom_rules": self.rules_text.toPlainText(),
+                "sounds_enabled": self.sounds_enabled,
+                "sound_volume": self.sound_volume,
+                "vertex_ai": existing_vertex_config,
+                "channels": {}
+            }
+            for ch_id, channel in self.ptt_channels.items():
+                settings["channels"][str(ch_id)] = {
+                    "mic_index": channel.mic_details.get("index"),
+                    "mic_name": channel.mic_details.get("name", ""),
+                    "language": channel.current_lang_code,
+                    "ptt_key": channel.ptt_activation_key
+                }
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2, ensure_ascii=False)
+            self.update_status(f"Ustawienia zapisane do {SETTINGS_FILE}")
+            log_message(f"Zapisano ustawienia: {settings}")
+        except Exception as e:
+            self.update_status(f"Blad zapisu ustawien: {e}")
+            log_message(f"Blad zapisu ustawien: {e}")
+    
+    def _load_settings(self):
+        """Wczytuje ustawienia z pliku."""
+        if not os.path.exists(SETTINGS_FILE):
+            log_message("Brak pliku ustawien - uzycie domyslnych")
+            return
+        
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            
+            log_message(f"Wczytano ustawienia: {settings}")
+            
+            # Model
+            saved_model = settings.get("model", "google")
+            if saved_model == "gemini" and VERTEX_AVAILABLE:
+                self.gemini_radio.setChecked(True)
+                self.selected_model = "gemini"
+            elif saved_model == "vosk":
+                self.vosk_radio.setChecked(True)
+                self.selected_model = "vosk"
+            else:
+                self.google_radio.setChecked(True)
+                self.selected_model = "google"
+            
+            # Custom rules
+            if "custom_rules" in settings:
+                self.rules_text.setPlainText(settings["custom_rules"])
+            
+            # Dzwieki
+            if "sounds_enabled" in settings:
+                self.sounds_enabled = settings["sounds_enabled"]
+                self.sounds_checkbox.setChecked(self.sounds_enabled)
+            
+            if "sound_volume" in settings:
+                self.sound_volume = settings["sound_volume"]
+                self.volume_slider.setValue(self.sound_volume)
+                self._update_volume()
+            
+            # Kanaly
+            for ch_id_str, ch_settings in settings.get("channels", {}).items():
+                ch_id = int(ch_id_str)
+                if ch_id not in self.ptt_channels:
+                    continue
+                channel = self.ptt_channels[ch_id]
+                
+                # Mikrofon - szukaj po nazwie
+                saved_mic_name = ch_settings.get("mic_name", "")
+                if saved_mic_name and channel.mic_combo is not None:
+                    for i in range(channel.mic_combo.count()):
+                        if saved_mic_name in channel.mic_combo.itemText(i):
+                            channel.mic_combo.setCurrentIndex(i)
+                            break
+                
+                # Jezyk
+                saved_lang = ch_settings.get("language", "pl-PL")
+                if channel.lang_combo is not None:
+                    for i in range(channel.lang_combo.count()):
+                        if channel.lang_combo.itemData(i) == saved_lang:
+                            channel.lang_combo.setCurrentIndex(i)
+                            break
+                channel.current_lang_code = saved_lang
+                
+                # Klawisz PTT
+                saved_ptt = ch_settings.get("ptt_key", "")
+                if saved_ptt:
+                    channel.ptt_activation_key = saved_ptt
+                    if channel.ptt_button is not None:
+                        channel.ptt_button.setText(saved_ptt.upper())
+            
+            self.update_status("Wczytano zapisane ustawienia")
+        except Exception as e:
+            log_message(f"Blad wczytywania ustawien: {e}")
+    
+    def _update_custom_rules(self):
+        """Aktualizuje globalna zmienna custom rules."""
+        global custom_rules_text
+        custom_rules_text = self.rules_text.toPlainText()
