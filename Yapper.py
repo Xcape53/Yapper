@@ -1377,3 +1377,241 @@ class SpeechToClipboardApp(QMainWindow):
         
         # Pokaz okno
         self.show()
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+    
+    # Nowoczesny ciemny motyw z akcentami
+    app.setStyleSheet("""
+        /* Glowne tlo */
+        QMainWindow {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #1a1a2e, stop:1 #16213e);
+        }
+        QWidget {
+            background-color: transparent;
+            color: #e8e8e8;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 13px;
+        }
+        
+        /* GroupBox - karty z cieniem */
+        QGroupBox {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #252542, stop:1 #1f1f38);
+            font-weight: bold;
+            font-size: 13px;
+            border: 1px solid #3a3a5c;
+            border-radius: 8px;
+            margin-top: 10px;
+            padding: 6px 8px 6px 8px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 6px;
+            color: #a8b4ff;
+        }
+        
+        /* ComboBox */
+        QComboBox {
+            background: #3a3a5c;
+            border: 1px solid #4a4a6c;
+            border-radius: 4px;
+            padding: 4px 8px;
+            padding-right: 20px;
+            color: #ffffff;
+            min-height: 14px;
+        }
+        QComboBox:hover {
+            border: 1px solid #6c6cff;
+        }
+        QComboBox::drop-down {
+            subcontrol-origin: padding;
+            subcontrol-position: center right;
+            width: 18px;
+            border: none;
+            background: transparent;
+        }
+        QComboBox::down-arrow {
+            width: 0;
+            height: 0;
+            border: none;
+            background: transparent;
+            image: none;
+        }
+        QComboBox QAbstractItemView {
+            background: #2d2d4a;
+            border: 1px solid #4a4a6c;
+            border-radius: 4px;
+            selection-background-color: #4a4a7c;
+            outline: 0;
+            padding: 0px;
+            margin: 0px;
+        }
+        QComboBox QAbstractItemView::item {
+            padding: 4px 8px;
+            color: #e0e0e0;
+        }
+        QComboBox QAbstractItemView::item:selected {
+            background: #4a4a7c;
+        }
+        /* Całkowite ukrycie scrollbara w ComboBox */
+        QComboBox QAbstractItemView QScrollBar:vertical {
+            width: 0px;
+            height: 0px;
+            min-width: 0px;
+            max-width: 0px;
+            border: none;
+            background: transparent;
+        }
+        QComboBox QAbstractItemView QScrollBar::handle:vertical,
+        QComboBox QAbstractItemView QScrollBar::add-line:vertical,
+        QComboBox QAbstractItemView QScrollBar::sub-line:vertical,
+        QComboBox QAbstractItemView QScrollBar::up-arrow:vertical,
+        QComboBox QAbstractItemView QScrollBar::down-arrow:vertical,
+        QComboBox QAbstractItemView QScrollBar::add-page:vertical,
+        QComboBox QAbstractItemView QScrollBar::sub-page:vertical {
+            width: 0px;
+            height: 0px;
+            min-width: 0px;
+            max-width: 0px;
+            border: none;
+            background: transparent;
+        }
+        QComboBox QAbstractScrollArea::corner {
+            border: none;
+            background: transparent;
+        }
+        
+        /* TextEdit - obszar tekstowy */
+        QTextEdit {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #2a2a45, stop:1 #232340);
+            border: 1px solid #3a3a5c;
+            border-radius: 8px;
+            padding: 8px;
+            color: #e0e0e0;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 12px;
+            selection-background-color: #5050a0;
+        }
+        QTextEdit:focus {
+            border: 2px solid #6c6cff;
+        }
+        
+        /* Przyciski - nowoczesne z gradientem */
+        QPushButton {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #5050a0, stop:1 #404080);
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            color: #ffffff;
+            font-weight: 600;
+            min-height: 14px;
+        }
+        QPushButton:hover {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #6060b0, stop:1 #5050a0);
+        }
+        QPushButton:pressed {
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #404080, stop:1 #353570);
+        }
+        QPushButton:disabled {
+            background: #3a3a4a;
+            color: #666666;
+        }
+        
+        /* Radio buttony - nowoczesne */
+        QRadioButton {
+            spacing: 10px;
+            color: #e0e0e0;
+            font-size: 13px;
+        }
+        QRadioButton::indicator {
+            width: 20px;
+            height: 20px;
+            border-radius: 10px;
+            border: 2px solid #5a5a8a;
+            background: #2a2a45;
+        }
+        QRadioButton::indicator:hover {
+            border: 2px solid #7c7cff;
+        }
+        QRadioButton::indicator:checked {
+            background: qradialgradient(cx:0.5, cy:0.5, radius:0.4,
+                fx:0.5, fy:0.5, stop:0 #8080ff, stop:1 #6060c0);
+            border: 2px solid #8080ff;
+        }
+        QRadioButton:disabled {
+            color: #555555;
+        }
+        QRadioButton::indicator:disabled {
+            border: 2px solid #404050;
+            background: #2a2a35;
+        }
+        
+        /* Label */
+        QLabel {
+            color: #d0d0d0;
+            background: transparent;
+        }
+        
+        /* ScrollBar - minimalistyczny */
+        QScrollBar:vertical {
+            background: #1a1a2e;
+            width: 10px;
+            border-radius: 5px;
+            margin: 0;
+        }
+        QScrollBar::handle:vertical {
+            background: #4a4a6c;
+            border-radius: 5px;
+            min-height: 30px;
+        }
+        QScrollBar::handle:vertical:hover {
+            background: #5a5a8c;
+        }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+            height: 0;
+        }
+        QScrollBar:horizontal {
+            background: #1a1a2e;
+            height: 10px;
+            border-radius: 5px;
+        }
+        QScrollBar::handle:horizontal {
+            background: #4a4a6c;
+            border-radius: 5px;
+            min-width: 30px;
+        }
+        QScrollBar::handle:horizontal:hover {
+            background: #5a5a8c;
+        }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+            width: 0;
+        }
+        
+        /* Tooltip */
+        QToolTip {
+            background-color: #2d2d4a;
+            color: #ffffff;
+            border: 1px solid #5050a0;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+    """)
+    
+    window = SpeechToClipboardApp()
+    window.run()
+    
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
