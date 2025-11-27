@@ -1,0 +1,25 @@
+{
+  "model": "google",
+  "custom_rules": "# Przykladowe reguly (usun # zeby aktywowac):\n# - Usun wszystkie \"yyy\", \"eee\", \"hmm\"\n# - Zamien \"nowa linia\" na znak nowej linii",
+  "sounds_enabled": true,
+  "sound_volume": 50,
+  "vertex_ai": {
+    "project_id": "your-google-cloud-project-id",
+    "location": "us-central1",
+    "client_secret_file": "your-client-secret-file.json"
+  },
+  "channels": {
+    "1": {
+      "mic_index": 0,
+      "mic_name": "",
+      "language": "pl-PL",
+      "ptt_key": "5"
+    },
+    "2": {
+      "mic_index": 0,
+      "mic_name": "",
+      "language": "pl-PL",
+      "ptt_key": "6"
+    }
+  }
+}
