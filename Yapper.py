@@ -5,10 +5,10 @@ import wave
 import json
 import threading
 import subprocess
+import msvcrt
 import numpy as np
 import pyaudio
 import keyboard
-import pyperclip
 import speech_recognition as sr
 # import winsound  # Zastapione przez QSoundEffect dla kontroli glosnosci
 from PIL import Image
@@ -36,40 +36,50 @@ except ImportError:
 
 # --- Vertex AI / Gemini API (OAuth2) ---
 VERTEX_AVAILABLE = False
+VERTEX_UNAVAILABLE_REASON = ""
+VERTEX_MODEL_ID = ""
 vertex_model = None
 user_credentials = None
+single_instance_handle = None
 
 def load_vertex_config():
     """Wczytuje konfiguracje Vertex AI z settings.json."""
     config = {
         "project_id": "",
-        "location": "us-central1",
-        "client_secret_file": ""
+        "location": "global",
+        "client_secret_file": "",
+        "model_id": "gemini-3.1-flash-lite"
     }
-    
+
     if os.path.exists("settings.json"):
         try:
             with open("settings.json", "r", encoding="utf-8") as f:
                 settings = json.load(f)
                 vertex_config = settings.get("vertex_ai", {})
                 config["project_id"] = vertex_config.get("project_id", "")
-                config["location"] = vertex_config.get("location", "us-central1")
+                config["location"] = vertex_config.get("location", "global")
                 config["client_secret_file"] = vertex_config.get("client_secret_file", "")
+                config["model_id"] = vertex_config.get("model_id", config["model_id"])
         except Exception:
             pass
-    
+
     # Fallback do zmiennych srodowiskowych
     if not config["project_id"]:
         config["project_id"] = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     if not config["client_secret_file"]:
         config["client_secret_file"] = os.getenv("GOOGLE_CLIENT_SECRET_FILE", "")
-    
+    env_model_id = os.getenv("GOOGLE_VERTEX_MODEL", "")
+    if env_model_id:
+        config["model_id"] = env_model_id
+    if not config["model_id"]:
+        config["model_id"] = GEMINI_MODEL
+
     return config
 
 def setup_vertex_ai():
     """Konfiguruje Vertex AI z OAuth2 credentials."""
-    global VERTEX_AVAILABLE, vertex_model, user_credentials
-    
+    global VERTEX_AVAILABLE, VERTEX_UNAVAILABLE_REASON, VERTEX_MODEL_ID, vertex_model, user_credentials
+
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
         from google.oauth2.credentials import Credentials
@@ -77,50 +87,65 @@ def setup_vertex_ai():
         import vertexai
         from vertexai.generative_models import GenerativeModel
         import pickle
-        
+
         vertex_config = load_vertex_config()
         PROJECT_ID = vertex_config["project_id"]
         LOCATION = vertex_config["location"]
         CLIENT_SECRET_FILE = vertex_config["client_secret_file"]
-        
+        MODEL_ID = vertex_config["model_id"]
+
         if not PROJECT_ID or not CLIENT_SECRET_FILE:
-            print("UWAGA: Brak konfiguracji Vertex AI w settings.json (project_id, client_secret_file)")
+            VERTEX_UNAVAILABLE_REASON = "Brak konfiguracji w settings.json (project_id lub client_secret_file)"
+            print(f"UWAGA: {VERTEX_UNAVAILABLE_REASON}")
             return False
-        
+
         SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
         TOKEN_FILE = "vertex_token.pickle"
-        
+
         if os.path.exists(TOKEN_FILE):
             with open(TOKEN_FILE, 'rb') as token:
                 user_credentials = pickle.load(token)
-        
+
         if not user_credentials or not user_credentials.valid:
             if user_credentials and user_credentials.expired and user_credentials.refresh_token:
-                user_credentials.refresh(Request())
-            else:
+                try:
+                    user_credentials.refresh(Request())
+                except Exception as e:
+                    log_message(f"Token Vertex AI niewazny, wymuszam ponowne logowanie: {e}")
+                    user_credentials = None
+                    try:
+                        os.remove(TOKEN_FILE)
+                    except OSError:
+                        pass
+
+            if not user_credentials or not user_credentials.valid:
                 client_secret_path = CLIENT_SECRET_FILE
                 if not os.path.exists(client_secret_path):
                     client_secret_path = resource_path(CLIENT_SECRET_FILE)
-                
+
                 if not os.path.exists(client_secret_path):
-                    print(f"UWAGA: Brak pliku {CLIENT_SECRET_FILE}")
+                    VERTEX_UNAVAILABLE_REASON = f"Brak pliku client_secret: {CLIENT_SECRET_FILE}"
+                    print(f"UWAGA: {VERTEX_UNAVAILABLE_REASON}")
                     return False
-                
+
                 flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, SCOPES)
                 user_credentials = flow.run_local_server(port=0)
-            
+
             with open(TOKEN_FILE, 'wb') as token:
                 pickle.dump(user_credentials, token)
-        
+
         vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=user_credentials)
-        vertex_model = GenerativeModel("gemini-2.0-flash-001")
-        
+        vertex_model = GenerativeModel(MODEL_ID)
+
         VERTEX_AVAILABLE = True
-        print(f"Vertex AI skonfigurowany (projekt: {PROJECT_ID})")
+        VERTEX_MODEL_ID = MODEL_ID
+        log_message(f"Vertex AI skonfigurowany (model: {MODEL_ID})")
+        print(f"Vertex AI skonfigurowany (projekt: {PROJECT_ID}, model: {MODEL_ID})")
         return True
-        
+
     except Exception as e:
-        print(f"UWAGA: Nie mozna skonfigurowac Vertex AI: {e}")
+        VERTEX_UNAVAILABLE_REASON = f"Błąd: {e}"
+        print(f"UWAGA: Nie można skonfigurować Vertex AI: {e}")
         VERTEX_AVAILABLE = False
         return False
 
@@ -131,7 +156,7 @@ try:
     from vosk import Model as VoskModel, KaldiRecognizer
     VOSK_AVAILABLE = True
 except ImportError:
-    print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostepny.")
+    print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostępny.")
 
 # --- Konfiguracja ---
 LOG_FILE_NAME = "yapper_log.txt"
@@ -141,20 +166,149 @@ PLAY_LAST_RECORDING = False
 DELAY_AFTER_KEY_RELEASE_MS = 500
 CHUNK_SIZE = 1024
 AUDIO_FORMAT = pyaudio.paInt16
+MIN_RECORDING_SECONDS = 1.0
 
 USE_ENSEMBLE_FOR_POLISH = True
 VOSK_MODEL_PATH = None
 
 USE_GEMINI = True
-GEMINI_MODEL = "gemini-2.0-flash-001"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+GEMINI_CHUNK_SECONDS = 30
+GEMINI_CHUNK_PAUSE_SECONDS = 0.35
+GEMINI_MP3_BITRATE_KBPS = 64
+DEFAULT_GOOGLE_FALLBACK = False
 BENCHMARK_MODE = False
 
-DEFAULT_CUSTOM_RULES = """# Przykladowe reguly (usun # zeby aktywowac):
-# - Usun wszystkie "yyy", "eee", "hmm"
-# - Zamien "nowa linia" na znak nowej linii
-# - Zamien "kropka" na "."
-# - Zamien "przecinek" na ","
+DEFAULT_CUSTOM_RULES = """# Przykładowe reguły (usuń # żeby aktywować):
+# - Usuń wszystkie "yyy", "eee", "hmm"
+# - Zamień "nowa linia" na znak nowej linii
+# - Zamień "kropka" na "."
+# - Zamień "przecinek" na ","
 # - Formatuj jako lista punktowana"""
+
+UI_LANGUAGE = "pl"
+
+TEXT = {
+    "pl": {
+        "window_title": "Yapper",
+        "model_group": "Model transkrypcji",
+        "model_gemini": "Gemini (Vertex AI)",
+        "model_google": "Google Speech API",
+        "model_vosk": "Vosk (offline)",
+        "model_status_checking": "Sprawdzanie dostępności...",
+        "gui_language_group": "Język GUI",
+        "language_group": "Język",
+        "language_polish": "Polski",
+        "language_english": "English",
+        "rules_group": "Reguły Gemini",
+        "rules_help": "Wpisz reguły (jedna na linię). Linie z # są ignorowane.",
+        "sounds_group": "Dźwięki",
+        "sounds_enable": "Włącz dźwięki PTT",
+        "volume_label": "Głośność:",
+        "status_group": "Status",
+        "status_initializing": "Inicjalizacja...",
+        "last_message": "Ostatnia wiadomość:",
+        "save_config": "Zapisz konfigurację",
+        "save_config_tooltip": "Zapisz wszystkie ustawienia do pliku",
+        "channel_group": "Kanał {channel_id}",
+        "mic_label": "Mikrofon:",
+        "ptt_label": "PTT:",
+        "ready": "Gotowy.",
+        "recording": "Nagrywanie...",
+        "processing": "Przetwarzanie...",
+        "select_microphone": "BŁĄD: Wybierz mikrofon!",
+        "no_audio": "Nie nagrano dźwięku.",
+        "audio_conversion_error": "Błąd konwersji audio.",
+        "too_short": "Nagrano zbyt krótko.",
+        "too_little_data": "Nagrano zbyt mało danych.",
+        "mic_not_configured": "BŁĄD: Mikrofon nie jest skonfigurowany.",
+        "stream_open_error": "BŁĄD: Nie można otworzyć strumienia audio.",
+        "recognized": "Rozpoznano [{system}]: {text}",
+        "gemini_limit": "Limit Gemini dla tego nagrania. Tekst nie został skopiowany.",
+        "recognition_failed": "Nie udało się rozpoznać mowy.",
+        "processing_error": "Błąd przetwarzania: {error}",
+        "settings_saved": "Ustawienia zapisane do {settings_file}",
+        "settings_save_error": "Błąd zapisu ustawień: {error}",
+        "settings_loaded": "Wczytano zapisane ustawienia",
+        "ptt_key_prompt": "Dla kanału {channel_id} wciśnij nowy klawisz PTT (ESC, aby anulować)...",
+        "ptt_key_cancelled": "Anulowano zmianę klawisza dla kanału {channel_id}.",
+        "ptt_instruction": "Kanał 1 ('{key1}'): Nagrywaj | Kanał 2 ('{key2}'): Nagrywaj\nPuść, aby przetworzyć. ESC chowa do zasobnika.",
+        "py_audio_error_title": "Błąd PyAudio",
+        "py_audio_error_body": "Nie można zainicjalizować PyAudio: {error}\nProgram nie może działać.",
+        "audio_init_error": "Błąd inicjalizacji audio. Zamykanie...",
+        "tray_show": "Pokaż",
+        "tray_exit": "Wyjdź",
+        "model_status_gemini_ok": "Gemini: OK",
+        "model_status_gemini_unavailable": "Gemini: niedostępny ({reason})",
+        "model_status_google_ok": "Google: OK",
+        "model_status_vosk_ok": "Vosk: OK",
+        "model_status_vosk_unavailable": "Vosk: niedostępny",
+    },
+    "en": {
+        "window_title": "Yapper",
+        "model_group": "Transcription model",
+        "model_gemini": "Gemini (Vertex AI)",
+        "model_google": "Google Speech API",
+        "model_vosk": "Vosk (offline)",
+        "model_status_checking": "Checking availability...",
+        "gui_language_group": "GUI language",
+        "language_group": "Language",
+        "language_polish": "Polish",
+        "language_english": "English",
+        "rules_group": "Gemini rules",
+        "rules_help": "Enter rules, one per line. Lines starting with # are ignored.",
+        "sounds_group": "Sounds",
+        "sounds_enable": "Enable PTT sounds",
+        "volume_label": "Volume:",
+        "status_group": "Status",
+        "status_initializing": "Initializing...",
+        "last_message": "Last message:",
+        "save_config": "Save config",
+        "save_config_tooltip": "Save all settings to file",
+        "channel_group": "Channel {channel_id}",
+        "mic_label": "Microphone:",
+        "ptt_label": "PTT:",
+        "ready": "Ready.",
+        "recording": "Recording...",
+        "processing": "Processing...",
+        "select_microphone": "ERROR: Select a microphone!",
+        "no_audio": "No audio recorded.",
+        "audio_conversion_error": "Audio conversion error.",
+        "too_short": "Recording too short.",
+        "too_little_data": "Not enough audio data.",
+        "mic_not_configured": "ERROR: Microphone is not configured.",
+        "stream_open_error": "ERROR: Cannot open audio stream.",
+        "recognized": "Recognized [{system}]: {text}",
+        "gemini_limit": "Gemini limit for this recording. Text was not copied.",
+        "recognition_failed": "Could not recognize speech.",
+        "processing_error": "Processing error: {error}",
+        "settings_saved": "Settings saved to {settings_file}",
+        "settings_save_error": "Settings save error: {error}",
+        "settings_loaded": "Saved settings loaded",
+        "ptt_key_prompt": "For channel {channel_id}, press a new PTT key (ESC to cancel)...",
+        "ptt_key_cancelled": "Cancelled key change for channel {channel_id}.",
+        "ptt_instruction": "Channel 1 ('{key1}'): record | Channel 2 ('{key2}'): record\nRelease to process. ESC hides to tray.",
+        "py_audio_error_title": "PyAudio error",
+        "py_audio_error_body": "Cannot initialize PyAudio: {error}\nThe program cannot run.",
+        "audio_init_error": "Audio initialization error. Closing...",
+        "tray_show": "Show",
+        "tray_exit": "Exit",
+        "model_status_gemini_ok": "Gemini: OK",
+        "model_status_gemini_unavailable": "Gemini: unavailable ({reason})",
+        "model_status_google_ok": "Google: OK",
+        "model_status_vosk_ok": "Vosk: OK",
+        "model_status_vosk_unavailable": "Vosk: unavailable",
+    },
+}
+
+
+def txt(key):
+    return TEXT[UI_LANGUAGE][key]
+
+
+def fmt(key, **kwargs):
+    return txt(key).format(**kwargs)
 
 custom_rules_text = ""
 
@@ -165,16 +319,34 @@ stop_program_event = threading.Event()
 tray_icon = None
 
 
+def acquire_single_instance_lock():
+    """Zapobiega uruchomieniu kilku instancji aplikacji naraz."""
+    global single_instance_handle
+    if os.name != "nt":
+        return True
+
+    lock_path = os.path.join(os.path.expanduser("~"), ".yapper.lock")
+    handle = open(lock_path, "a+b")
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+
+    single_instance_handle = handle
+    return True
+
+
 def initialize_vosk_model():
     """Inicjalizuje model Vosk dla polskiego (lazy loading)."""
     global vosk_model, VOSK_AVAILABLE
-    
+
     if not VOSK_AVAILABLE:
         return None
-    
+
     if vosk_model is not None:
         return vosk_model
-    
+
     try:
         log_message("Inicjalizacja modelu Vosk dla polskiego...")
         if VOSK_MODEL_PATH and os.path.exists(VOSK_MODEL_PATH):
@@ -192,32 +364,32 @@ def initialize_vosk_model():
 def transcribe_with_vosk(audio_data_bytes, sample_rate):
     """Transkrypcja za pomoca Vosk."""
     global vosk_model
-    
+
     if not VOSK_AVAILABLE:
-        return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Vosk niedostepny'}
-    
+        return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Vosk niedostępny'}
+
     model = initialize_vosk_model()
     if model is None:
         return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Model nie zaladowany'}
-    
+
     try:
         rec = KaldiRecognizer(model, sample_rate)
         rec.SetWords(True)
-        
+
         chunk_size = 4000
         for i in range(0, len(audio_data_bytes), chunk_size):
             chunk = audio_data_bytes[i:i + chunk_size]
             rec.AcceptWaveform(chunk)
-        
+
         result = json.loads(rec.FinalResult())
         text = result.get('text', '')
-        
+
         confidence = 0.85
         if 'result' in result and result['result']:
             word_confs = [w.get('conf', 0.85) for w in result['result']]
             if word_confs:
                 confidence = sum(word_confs) / len(word_confs)
-        
+
         return {
             'text': text,
             'confidence': confidence,
@@ -245,64 +417,179 @@ def transcribe_with_google(audio_data_obj, lang_code):
         return {'text': '', 'confidence': 0, 'system': 'Google', 'error': str(e)}
 
 
+def build_wav_data(audio_bytes, sample_rate):
+    """Opakowuje surowe mono PCM 16-bit w kontener WAV."""
+    import io
+
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_bytes)
+    wav_buffer.seek(0)
+    return wav_buffer.read()
+
+
+def build_mp3_data(audio_bytes, sample_rate):
+    """Koduje surowe mono PCM 16-bit do MP3 bez zewnetrznego ffmpeg."""
+    import lameenc
+
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(GEMINI_MP3_BITRATE_KBPS)
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_channels(1)
+    encoder.set_quality(5)
+    return bytes(encoder.encode(audio_bytes) + encoder.flush())
+
+
+def build_gemini_audio_payload(audio_bytes, sample_rate):
+    """Buduje payload audio dla Gemini, preferujac MP3 i cofajac sie do WAV."""
+    try:
+        mp3_data = build_mp3_data(audio_bytes, sample_rate)
+        if mp3_data:
+            return mp3_data, "audio/mp3"
+    except Exception as e:
+        log_message(f"Gemini: MP3 encode failed, fallback do WAV: {e}")
+
+    return build_wav_data(audio_bytes, sample_rate), "audio/wav"
+
+
+def is_quota_error(error_text):
+    """Rozpoznaje bledy limitow Vertex AI."""
+    normalized = (error_text or "").lower()
+    return "429" in normalized or "resource has been exhausted" in normalized or "quota" in normalized
+
+
+def get_gemini_model(model_id=None):
+    """Zwraca obiekt modelu Gemini dla aktualnego albo wskazanego modelu."""
+    if model_id is None or model_id == VERTEX_MODEL_ID:
+        return vertex_model
+
+    from vertexai.generative_models import GenerativeModel
+    return GenerativeModel(model_id)
+
+
+def generate_gemini_content(audio_bytes, sample_rate, prompt, model_id=None):
+    """Wysyla pojedynczy fragment audio do Gemini."""
+    from vertexai.generative_models import Part
+
+    audio_data, mime_type = build_gemini_audio_payload(audio_bytes, sample_rate)
+    audio_part = Part.from_data(audio_data, mime_type=mime_type)
+    model = get_gemini_model(model_id)
+    return model.generate_content([audio_part, prompt])
+
+
+def split_audio_chunks(audio_bytes, sample_rate, chunk_seconds):
+    """Dzieli mono PCM 16-bit na rowne fragmenty czasowe."""
+    bytes_per_second = sample_rate * 2
+    chunk_size = max(bytes_per_second, bytes_per_second * chunk_seconds)
+    for start in range(0, len(audio_bytes), chunk_size):
+        yield audio_bytes[start:start + chunk_size]
+
+
+def clean_transcript_text(text):
+    """Usuwa proste opakowanie cytatami z odpowiedzi modelu."""
+    text = (text or "").strip()
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    if text.startswith("'") and text.endswith("'"):
+        text = text[1:-1]
+    return text.strip()
+
+
 def transcribe_with_gemini(audio_bytes, sample_rate, lang_code="pl-PL"):
     """Transkrypcja za pomoca Gemini przez Vertex AI."""
     global vertex_model, VERTEX_AVAILABLE, custom_rules_text
-    
-    if not VERTEX_AVAILABLE or vertex_model is None:
-        return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': 'Vertex AI niedostepny'}
-    
-    try:
-        import io
-        from vertexai.generative_models import Part
-        start_time = time.time()
-        
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_bytes)
-        wav_buffer.seek(0)
-        wav_data = wav_buffer.read()
-        
-        lang_name = "polskim" if lang_code.startswith("pl") else "angielskim"
-        
-        prompt = f"""Jestes precyzyjnym systemem transkrypcji mowy. 
-Przetranśkrybuj dokladnie to co slyszysz w nagraniu audio. 
-Jezyk: {lang_name}.
-WAZNE: Zwroc TYLKO tekst transkrypcji, bez zadnych dodatkowych komentarzy, wyjasnien ani formatowania.
-Jesli nie slyszysz zadnej mowy, zwroc pusty tekst."""
 
-        active_rules = [line.strip() for line in custom_rules_text.split('\n') 
+    if not VERTEX_AVAILABLE or vertex_model is None:
+        return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': 'Vertex AI niedostępny'}
+
+    try:
+        start_time = time.time()
+        lang_name = "polskim" if lang_code.startswith("pl") else "angielskim"
+
+        prompt = f"""Jesteś precyzyjnym systemem transkrypcji mowy.
+Przetranskrybuj dokładnie to, co słyszysz w nagraniu audio.
+Język: {lang_name}.
+WAŻNE: Zwróć TYLKO tekst transkrypcji, bez żadnych dodatkowych komentarzy, wyjaśnień ani formatowania.
+Jeśli nie słyszysz żadnej mowy, zwróć pusty tekst."""
+
+        active_rules = [line.strip() for line in custom_rules_text.split('\n')
                        if line.strip() and not line.strip().startswith('#')]
-        
+
         if active_rules:
             rules_text = '\n'.join(f"- {rule}" for rule in active_rules)
             prompt += f"""
 
-DODATKOWE REGULY PRZETWARZANIA (zastosuj je do transkrypcji):
+DODATKOWE REGUŁY PRZETWARZANIA (zastosuj je do transkrypcji):
 {rules_text}"""
 
-        audio_part = Part.from_data(wav_data, mime_type="audio/wav")
-        response = vertex_model.generate_content([audio_part, prompt])
-        
+        duration_seconds = len(audio_bytes) / max(sample_rate * 2, 1)
+        used_model_id = VERTEX_MODEL_ID or GEMINI_MODEL
+
+        if duration_seconds > GEMINI_CHUNK_SECONDS:
+            chunk_count = (len(audio_bytes) + (sample_rate * 2 * GEMINI_CHUNK_SECONDS) - 1) // (sample_rate * 2 * GEMINI_CHUNK_SECONDS)
+            log_message(
+                f"Gemini: dlugie audio {duration_seconds:.1f}s, "
+                f"dzielenie na {chunk_count} fragmentow po {GEMINI_CHUNK_SECONDS}s, format MP3"
+            )
+            partial_texts = []
+
+            for index, chunk in enumerate(split_audio_chunks(audio_bytes, sample_rate, GEMINI_CHUNK_SECONDS), start=1):
+                try:
+                    log_message(f"Gemini chunk {index}/{chunk_count}: model {used_model_id}")
+                    response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                except Exception as chunk_error:
+                    error_text = str(chunk_error)
+                    if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
+                        log_message(
+                            f"Gemini chunk {index}/{chunk_count}: quota na {used_model_id}, "
+                            f"retry tego samego fragmentu przez {GEMINI_FALLBACK_MODEL}"
+                        )
+                        used_model_id = GEMINI_FALLBACK_MODEL
+                        response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                    else:
+                        raise
+
+                chunk_text = response.text.strip() if response.text else ''
+                if chunk_text:
+                    partial_texts.append(clean_transcript_text(chunk_text))
+                time.sleep(GEMINI_CHUNK_PAUSE_SECONDS)
+
+            elapsed_time = time.time() - start_time
+            return {
+                'text': " ".join(partial_texts).strip(),
+                'confidence': 0.95,
+                'system': 'Gemini',
+                'model_id': used_model_id,
+                'latency': elapsed_time
+            }
+
+        try:
+            log_message(f"Gemini: krotkie audio {duration_seconds:.1f}s, format MP3, model {used_model_id}")
+            response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+        except Exception as e:
+            error_text = str(e)
+            if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
+                log_message(f"Gemini quota na {used_model_id}, retry tego samego audio przez {GEMINI_FALLBACK_MODEL}")
+                used_model_id = GEMINI_FALLBACK_MODEL
+                response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+            else:
+                raise
+
         elapsed_time = time.time() - start_time
-        
         text = response.text.strip() if response.text else ''
-        
-        if text.startswith('"') and text.endswith('"'):
-            text = text[1:-1]
-        if text.startswith("'") and text.endswith("'"):
-            text = text[1:-1]
-        
+        text = clean_transcript_text(text)
+
         return {
             'text': text,
             'confidence': 0.95,
             'system': 'Gemini',
+            'model_id': used_model_id,
             'latency': elapsed_time
         }
-        
+
     except Exception as e:
         log_message(f"Blad Gemini: {e}")
         return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': str(e)}
@@ -330,11 +617,11 @@ def log_message(message):
 class SignalBridge(QObject):
     """Most do komunikacji miedzy watkami a GUI Qt."""
     status_changed = pyqtSignal(str)
+    processed_model_changed = pyqtSignal(str)
+    clipboard_write_requested = pyqtSignal(str, str, str, str)
     ready_signal = pyqtSignal()
     stop_recording_ch1 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 1
     stop_recording_ch2 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 2
-
-
 class PttChannel:
     """Zarzadza jednym kanalem Push-to-Talk."""
 
