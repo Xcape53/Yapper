@@ -39,6 +39,7 @@ ENV/
 
 # PyInstaller
 *.spec
+!Yapper.spec
 *.manifest
 *.log
 
@@ -49,3 +50,7 @@ yapper_log.txt
 # Output folders
 output/
 old/
+releases/
+
+# Release archives
+Yapper-*.zip
