@@ -622,6 +622,8 @@ class SignalBridge(QObject):
     ready_signal = pyqtSignal()
     stop_recording_ch1 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 1
     stop_recording_ch2 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 2
+
+
 class PttChannel:
     """Zarzadza jednym kanalem Push-to-Talk."""
 
@@ -643,12 +645,16 @@ class PttChannel:
         self.current_recording_actual_channels = 1
 
         # Elementy GUI (Qt)
+        self.group_box = None
+        self.lang_label = None
         self.lang_combo = None
+        self.mic_label = None
         self.mic_combo = None
+        self.ptt_label = None
         self.ptt_button = None
 
     def update_status(self, message):
-        self.app.update_status(f"[Kanal {self.id}] {message}")
+        self.app.update_status(f"[Kanał {self.id}] {message}")
 
     def start_recording(self):
         # Ignoruj jesli juz nagrywamy lub program sie zamyka
@@ -656,26 +662,26 @@ class PttChannel:
             return
 
         if self.mic_details.get("index") is None:
-            self.update_status("BLAD: Wybierz mikrofon!")
+            self.update_status(txt("select_microphone"))
             return
 
         self.ptt_key_pressed = True
         self.is_recording_active = True
         self.app.is_any_recording_active = True
-        
+
         # Dzwiek startu
         self.app._play_sound("press")
-        
-        self.update_status("Nagrywanie...")
+
+        self.update_status(txt("recording"))
         threading.Thread(target=self.record_audio_loop, daemon=True).start()
 
     def stop_recording_and_process(self):
         # Natychmiast resetuj flage klawisza
         if not self.ptt_key_pressed:
             return
-        
+
         self.ptt_key_pressed = False
-        
+
         if stop_program_event.is_set() or not self.is_recording_active:
             return
 
@@ -699,10 +705,10 @@ class PttChannel:
         # Poczekaj az watek nagrywania sie zakonczy
         time.sleep(0.15)
 
-        self.update_status("Przetwarzanie...")
+        self.update_status(txt("processing"))
 
         if not self.audio_frames:
-            self.update_status("Nie nagrano dzwieku.")
+            self.update_status(txt("no_audio"))
             self.app.set_ready_status()
             return
 
@@ -719,16 +725,27 @@ class PttChannel:
                 recorded_audio_data = audio_mono.tobytes()
             except Exception as e:
                 log_message(f"CH {self.id}: Blad konwersji do mono: {e}")
-                self.update_status("Blad konwersji audio.")
+                self.update_status(txt("audio_conversion_error"))
                 self.app.set_ready_status()
                 return
+
+        sample_rate = self.mic_details['sample_rate']
+        duration_seconds = len(recorded_audio_data) / max(sample_rate * 2, 1)
+        if duration_seconds < MIN_RECORDING_SECONDS:
+            log_message(
+                f"CH {self.id}: Nagranie za krotkie ({duration_seconds:.2f}s < "
+                f"{MIN_RECORDING_SECONDS:.2f}s). Nie wysylam do API i nie dotykam schowka."
+            )
+            self.update_status(txt("too_short"))
+            self.app.set_ready_status()
+            return
 
         recording_filename = f"last_recording_ch{self.id}.wav"
         if SAVE_LAST_RECORDING or PLAY_LAST_RECORDING:
             self.save_and_play_audio(recorded_audio_data, recording_filename)
 
         if len(recorded_audio_data) < 400:
-            self.update_status("Nagrano zbyt malo danych.")
+            self.update_status(txt("too_little_data"))
             self.app.set_ready_status()
             return
 
@@ -740,32 +757,36 @@ class PttChannel:
         try:
             audio_data_obj = sr.AudioData(recorded_audio_data, self.mic_details['sample_rate'],
                                           self.mic_details['sample_width'])
-            
+
             text = None
             used_system = None
-            
+            used_model_id = None
+            last_error = None
+
             selected = self.app.get_selected_model()
             log_message(f"CH {self.id}: Wybrany model: {selected}")
-            
+
             # --- GEMINI ---
             if selected == "gemini" and VERTEX_AVAILABLE:
                 self.update_status("Gemini...")
                 gemini_start = time.time()
                 gemini_result = transcribe_with_gemini(
-                    recorded_audio_data, 
+                    recorded_audio_data,
                     self.mic_details['sample_rate'],
                     self.current_lang_code
                 )
                 gemini_time = time.time() - gemini_start
                 text = gemini_result.get('text', '')
-                
+
                 if text:
                     log_message(f"CH {self.id}: Gemini OK w {gemini_time:.2f}s")
                     used_system = "Gemini"
+                    used_model_id = gemini_result.get('model_id')
                 else:
                     error = gemini_result.get('error', 'Brak tekstu')
+                    last_error = error
                     log_message(f"CH {self.id}: Gemini nie rozpoznal: {error}")
-            
+
             # --- GOOGLE ---
             elif selected == "google":
                 self.update_status("Google Speech...")
@@ -779,7 +800,7 @@ class PttChannel:
                     log_message(f"CH {self.id}: Google nie rozpoznal mowy")
                 except sr.RequestError as e:
                     log_message(f"CH {self.id}: Google API blad: {e}")
-            
+
             # --- VOSK ---
             elif selected == "vosk" and VOSK_AVAILABLE:
                 self.update_status("Vosk (offline)...")
@@ -787,13 +808,13 @@ class PttChannel:
                 vosk_result = transcribe_with_vosk(recorded_audio_data, self.mic_details['sample_rate'])
                 vosk_time = time.time() - vosk_start
                 text = vosk_result.get('text', '')
-                
+
                 if text:
                     log_message(f"CH {self.id}: Vosk OK w {vosk_time:.2f}s")
                     used_system = "Vosk"
-            
+
             # --- FALLBACK ---
-            if not text and selected != "google":
+            if not text and selected != "google" and self.app.should_fallback_to_google():
                 self.update_status("Fallback: Google Speech...")
                 try:
                     google_start = time.time()
@@ -805,17 +826,29 @@ class PttChannel:
                     log_message(f"CH {self.id}: Google fallback nie rozpoznal")
                 except sr.RequestError as e:
                     log_message(f"CH {self.id}: Google fallback blad: {e}")
-            
+            elif not text and selected != "google":
+                log_message(f"CH {self.id}: Google fallback wylaczony")
+
             # --- WYNIK ---
+            text = (text or "").strip()
             if text:
-                self.update_status(f"Rozpoznano [{used_system}]: {text}")
-                pyperclip.copy(text)
+                self.update_status(fmt("recognized", system=used_system, text=text))
+                self.app.update_processed_model_status(used_system, used_model_id)
+                self.app.request_clipboard_write(
+                    text,
+                    source=f"CH {self.id}",
+                    used_system=used_system or "",
+                    model_id=used_model_id or ""
+                )
             else:
-                self.update_status("Nie udalo sie rozpoznac mowy.")
+                if is_quota_error(last_error):
+                    self.update_status(txt("gemini_limit"))
+                else:
+                    self.update_status(txt("recognition_failed"))
                 log_message(f"CH {self.id}: Wszystkie systemy zawiodly")
-                    
+
         except Exception as e:
-            self.update_status(f"Blad przetwarzania: {e}")
+            self.update_status(fmt("processing_error", error=e))
             log_message(f"CH {self.id}: Blad podczas przetwarzania: {e}")
 
         self.app.set_ready_status()
@@ -824,7 +857,7 @@ class PttChannel:
         global pyaudio_instance
 
         if self.mic_details.get("index") is None:
-            self.update_status("BLAD: Mikrofon nie jest skonfigurowany.")
+            self.update_status(txt("mic_not_configured"))
             self.is_recording_active = False
             return
 
@@ -835,7 +868,7 @@ class PttChannel:
                 continue
 
             try:
-                log_message(f"CH {self.id}: Proba otwarcia strumienia z {target_ch} kanalem/ami...")
+                log_message(f"CH {self.id}: Próba otwarcia strumienia z {target_ch} kanałem/ami...")
                 self.pyaudio_stream = pyaudio_instance.open(
                     format=AUDIO_FORMAT, channels=target_ch,
                     rate=self.mic_details['sample_rate'], input=True,
@@ -843,12 +876,12 @@ class PttChannel:
                     input_device_index=self.mic_details['index'])
                 self.current_recording_actual_channels = target_ch
                 stream_opened_successfully = True
-                log_message(f"CH {self.id}: SUKCES. Strumien otwarty.")
+                log_message(f"CH {self.id}: SUKCES. Strumień otwarty.")
             except Exception as e:
-                log_message(f"CH {self.id}: BLAD otwarcia strumienia: {e}")
+                log_message(f"CH {self.id}: BŁĄD otwarcia strumienia: {e}")
 
         if not stream_opened_successfully:
-            self.update_status(f"BLAD: Nie mozna otworzyc strumienia audio.")
+            self.update_status(txt("stream_open_error"))
             self.is_recording_active = False
             self.app.is_any_recording_active = False
             return
@@ -890,8 +923,6 @@ class PttChannel:
                     subprocess.call(["open" if sys.platform == "darwin" else "xdg-open", filepath])
         except Exception as e:
             log_message(f"CH {self.id}: Blad zapisu pliku: {e}")
-
-
 class SpeechToClipboardApp(QMainWindow):
     """Glowne okno aplikacji PyQt6."""
     
