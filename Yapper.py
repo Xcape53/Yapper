@@ -923,34 +923,40 @@ class PttChannel:
                     subprocess.call(["open" if sys.platform == "darwin" else "xdg-open", filepath])
         except Exception as e:
             log_message(f"CH {self.id}: Blad zapisu pliku: {e}")
+
+
 class SpeechToClipboardApp(QMainWindow):
     """Glowne okno aplikacji PyQt6."""
-    
+
     def __init__(self):
         super().__init__()
-        
+
         self.signal_bridge = SignalBridge()
         self.signal_bridge.status_changed.connect(self._handle_signal)
+        self.signal_bridge.processed_model_changed.connect(self._handle_processed_model_signal)
+        self.signal_bridge.clipboard_write_requested.connect(self.copy_text_to_clipboard)
         self.signal_bridge.ready_signal.connect(self._set_ready)
-        
+
         self.channel_being_configured = None
         self.is_any_recording_active = False
         self.all_input_mics_details = []
         self.selected_model = "gemini"
+        self.gui_language = UI_LANGUAGE
+        self.fallback_to_google = DEFAULT_GOOGLE_FALLBACK
         self.sounds_enabled = True
         self.sound_volume = 50  # Domyslna glosnosc 50%
-        
+
         self.press_sound = QSoundEffect()
         self.release_sound = QSoundEffect()
         self._init_sounds()
-        
+
         self.ptt_channels = {
             "1": PttChannel(channel_id="1", app=self, initial_ptt_key="5", initial_lang="pl-PL",
                             target_mic_name_start="Voicemeeter Out B1"),
             "2": PttChannel(channel_id="2", app=self, initial_ptt_key="6", initial_lang="pl-PL",
                             target_mic_name_start="CABLE Output")
         }
-        
+
         # Podlacz sygnaly stop_recording do kanalow
         self.signal_bridge.stop_recording_ch1.connect(
             lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["1"]._actual_stop_and_process)
@@ -958,14 +964,14 @@ class SpeechToClipboardApp(QMainWindow):
         self.signal_bridge.stop_recording_ch2.connect(
             lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["2"]._actual_stop_and_process)
         )
-        
+
         self.init_ui()
-        
+
     def init_ui(self):
         """Inicjalizacja interfejsu uzytkownika."""
-        self.setWindowTitle("Yapper")
-        self.setMinimumSize(650, 550)
-        
+        self.setWindowTitle(txt("window_title"))
+        self.setFixedSize(787, 603)
+
         # Ikona okna
         try:
             icon_path = resource_path("_internal/wafflin.ico")
@@ -973,88 +979,110 @@ class SpeechToClipboardApp(QMainWindow):
                 self.setWindowIcon(QIcon(icon_path))
         except Exception:
             pass
-        
+
         # Glowny widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(15, 15, 15, 15)
-        
-        # --- Model transkrypcji ---
-        model_group = QGroupBox("Model transkrypcji")
-        model_layout = QVBoxLayout(model_group)
-        
+
+        # --- Model transkrypcji + jezyk ---
+        top_controls_layout = QHBoxLayout()
+        top_controls_layout.setSpacing(10)
+
+        self.model_group = QGroupBox(txt("model_group"))
+        model_layout = QVBoxLayout(self.model_group)
+
         models_row = QHBoxLayout()
         self.model_button_group = QButtonGroup(self)
-        
+
         # Gemini - domyslnie wylaczony, wlaczony w run() po inicjalizacji Vertex AI
-        self.gemini_radio = QRadioButton("Gemini (Vertex AI)")
+        self.gemini_radio = QRadioButton(txt("model_gemini"))
         self.gemini_radio.setEnabled(False)  # Wlaczony pozniej w run()
         self.gemini_radio.toggled.connect(lambda checked: self._on_model_change("gemini") if checked else None)
         self.model_button_group.addButton(self.gemini_radio)
         models_row.addWidget(self.gemini_radio)
-        
+
         # Google
-        self.google_radio = QRadioButton("Google Speech API")
+        self.google_radio = QRadioButton(txt("model_google"))
         self.google_radio.toggled.connect(lambda checked: self._on_model_change("google") if checked else None)
         self.model_button_group.addButton(self.google_radio)
         models_row.addWidget(self.google_radio)
-        
+
         # Vosk
-        self.vosk_radio = QRadioButton("Vosk (offline)")
+        self.vosk_radio = QRadioButton(txt("model_vosk"))
         self.vosk_radio.setEnabled(VOSK_AVAILABLE)
         self.vosk_radio.toggled.connect(lambda checked: self._on_model_change("vosk") if checked else None)
         self.model_button_group.addButton(self.vosk_radio)
         models_row.addWidget(self.vosk_radio)
-        
+
         models_row.addStretch()
         model_layout.addLayout(models_row)
-        
+
         # Status dostepnosci - bedzie aktualizowany w run()
-        self.model_status_label = QLabel("Sprawdzanie dostepnosci...")
+        self.model_status_label = QLabel(txt("model_status_checking"))
         self.model_status_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
         model_layout.addWidget(self.model_status_label)
-        
+
+        self.gui_language_group = QGroupBox(txt("gui_language_group"))
+        self.gui_language_group.setFixedWidth(170)
+        language_layout = QVBoxLayout(self.gui_language_group)
+        language_layout.setContentsMargins(10, 7, 10, 8)
+        language_layout.setSpacing(5)
+
+        self.language_button_group = QButtonGroup(self)
+        self.polish_radio = QRadioButton(txt("language_polish"))
+        self.english_radio = QRadioButton(txt("language_english"))
+        self.polish_radio.setChecked(True)
+        self.polish_radio.toggled.connect(lambda checked: self._on_gui_language_change("pl") if checked else None)
+        self.english_radio.toggled.connect(lambda checked: self._on_gui_language_change("en") if checked else None)
+        self.language_button_group.addButton(self.polish_radio)
+        self.language_button_group.addButton(self.english_radio)
+        language_layout.addWidget(self.polish_radio)
+        language_layout.addWidget(self.english_radio)
+
         # Domyslnie Google dopoki Vertex AI nie zostanie sprawdzony
         self.google_radio.setChecked(True)
         self.selected_model = "google"
-        
-        main_layout.addWidget(model_group)
-        
+
+        top_controls_layout.addWidget(self.model_group, 1)
+        top_controls_layout.addWidget(self.gui_language_group)
+        main_layout.addLayout(top_controls_layout)
+
         # --- Kanaly PTT ---
         for ch_id in self.ptt_channels:
             channel_group = self._create_channel_ui(ch_id)
             main_layout.addWidget(channel_group)
-        
+
         # --- Custom Rules ---
-        rules_group = QGroupBox("Custom Rules (Gemini)")
-        rules_layout = QVBoxLayout(rules_group)
+        self.rules_group = QGroupBox(txt("rules_group"))
+        rules_layout = QVBoxLayout(self.rules_group)
         rules_layout.setSpacing(4)
         rules_layout.setContentsMargins(8, 6, 8, 8)
-        
-        help_label = QLabel("Wpisz reguly (jedna na linie). Linie z # sa ignorowane.")
-        help_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
-        rules_layout.addWidget(help_label)
-        
+
+        self.rules_help_label = QLabel(txt("rules_help"))
+        self.rules_help_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
+        rules_layout.addWidget(self.rules_help_label)
+
         self.rules_text = QTextEdit()
         self.rules_text.setPlainText(DEFAULT_CUSTOM_RULES)
         self.rules_text.setMinimumHeight(90)
         self.rules_text.setMaximumHeight(110)
         self.rules_text.textChanged.connect(self._update_custom_rules)
         rules_layout.addWidget(self.rules_text)
-        
-        main_layout.addWidget(rules_group)
-        
+
+        main_layout.addWidget(self.rules_group)
+
         # --- Dolny rzad (Dzwieki i Status) ---
         bottom_row_layout = QHBoxLayout()
-        
+
         # --- Dzwieki ---
-        sounds_group = QGroupBox("Dzwieki")
-        sounds_layout = QHBoxLayout(sounds_group)
+        self.sounds_group = QGroupBox(txt("sounds_group"))
+        sounds_layout = QHBoxLayout(self.sounds_group)
         sounds_layout.setContentsMargins(8, 6, 8, 8)
-        
-        self.sounds_checkbox = QCheckBox("Wlacz dzwieki PTT")
+
+        self.sounds_checkbox = QCheckBox(txt("sounds_enable"))
         self.sounds_checkbox.setChecked(True)
         self.sounds_checkbox.toggled.connect(self._toggle_sounds)
         self.sounds_checkbox.setStyleSheet("""
@@ -1079,12 +1107,12 @@ class SpeechToClipboardApp(QMainWindow):
             }
         """)
         sounds_layout.addWidget(self.sounds_checkbox)
-        
+
         # Suwak glosnosci
-        vol_label = QLabel("Glosnosc:")
-        vol_label.setStyleSheet("color: #d0d0d0; margin-left: 20px;")
-        sounds_layout.addWidget(vol_label)
-        
+        self.volume_label = QLabel(txt("volume_label"))
+        self.volume_label.setStyleSheet("color: #d0d0d0; margin-left: 20px;")
+        sounds_layout.addWidget(self.volume_label)
+
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.sound_volume)
@@ -1111,36 +1139,59 @@ class SpeechToClipboardApp(QMainWindow):
             }
         """)
         sounds_layout.addWidget(self.volume_slider)
-        
+
         # Etykieta z procentami
         self.volume_percent_label = QLabel(f"{self.sound_volume}%")
         self.volume_percent_label.setStyleSheet("color: #a8b4ff; font-weight: bold; min-width: 35px; margin-left: 5px;")
         sounds_layout.addWidget(self.volume_percent_label)
-        
+
         sounds_layout.addStretch()  # Wyrownanie do lewej
-        
-        bottom_row_layout.addWidget(sounds_group, 1)
-        
+
+        bottom_row_layout.addWidget(self.sounds_group, 1)
+
         # --- Status i Zapisz ---
-        status_group = QGroupBox("Status")
-        status_layout = QHBoxLayout(status_group)
+        self.status_group = QGroupBox(txt("status_group"))
+        status_layout = QHBoxLayout(self.status_group)
         status_layout.setContentsMargins(8, 6, 8, 8)
-        
-        self.status_label = QLabel("Inicjalizacja...")
+
+        status_text_layout = QVBoxLayout()
+        status_text_layout.setSpacing(3)
+
+        self.status_label = QLabel(txt("status_initializing"))
         self.status_label.setWordWrap(True)
-        status_layout.addWidget(self.status_label, 1)
-        
+        self.status_label.setFixedHeight(34)
+        status_text_layout.addWidget(self.status_label)
+
+        self.last_message_label = QLabel(txt("last_message"))
+        self.last_message_label.setStyleSheet("color: #8f9bd8; font-size: 11px;")
+        self.last_message_label.setFixedHeight(18)
+        status_text_layout.addWidget(self.last_message_label)
+
+        status_layout.addLayout(status_text_layout, 1)
+
+        self.processed_model_label = QLabel("-")
+        self.processed_model_label.setStyleSheet("color: #8f9bd8; font-size: 11px;")
+        self.processed_model_label.setWordWrap(True)
+        self.processed_model_label.setFixedWidth(150)
+        self.processed_model_label.setFixedHeight(18)
+
         # Przycisk zapisu konfiguracji
-        save_config_btn = QPushButton("Zapisz konfiguracje")
-        save_config_btn.setFixedWidth(150)
-        save_config_btn.setToolTip("Zapisz wszystkie ustawienia do pliku")
-        save_config_btn.clicked.connect(self._save_settings)
-        status_layout.addWidget(save_config_btn)
-        
-        bottom_row_layout.addWidget(status_group, 1)
-        
+        status_actions_layout = QVBoxLayout()
+        status_actions_layout.setSpacing(4)
+
+        self.save_config_btn = QPushButton(txt("save_config"))
+        self.save_config_btn.setFixedWidth(150)
+        self.save_config_btn.setToolTip(txt("save_config_tooltip"))
+        self.save_config_btn.clicked.connect(self._save_settings)
+        status_actions_layout.addWidget(self.save_config_btn)
+        status_actions_layout.addWidget(self.processed_model_label)
+        status_actions_layout.addStretch()
+        status_layout.addLayout(status_actions_layout)
+
+        bottom_row_layout.addWidget(self.status_group, 1)
+
         main_layout.addLayout(bottom_row_layout)
-        
+
         # --- Instrukcje PTT ---
         self.ptt_instruction_label = QLabel()
         self.ptt_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1154,13 +1205,12 @@ class SpeechToClipboardApp(QMainWindow):
             color: #b0b0d0;
         """)
         main_layout.addWidget(self.ptt_instruction_label)
-        
+
         # Rozciagnij reszte
         main_layout.addStretch()
-        
+
         # Inicjalizacja custom rules
         self._update_custom_rules()
-        
     def _create_channel_ui(self, channel_id):
         """Tworzy UI dla kanalu PTT."""
         channel = self.ptt_channels[channel_id]
