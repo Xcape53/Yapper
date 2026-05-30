@@ -1211,42 +1211,30 @@ class SpeechToClipboardApp(QMainWindow):
 
         # Inicjalizacja custom rules
         self._update_custom_rules()
+
     def _create_channel_ui(self, channel_id):
         """Tworzy UI dla kanalu PTT."""
         channel = self.ptt_channels[channel_id]
-        
-        group = QGroupBox(f"Kanal {channel_id}")
+
+        group = QGroupBox(fmt("channel_group", channel_id=channel_id))
+        channel.group_box = group
         layout = QHBoxLayout(group)
         layout.setSpacing(8)
         layout.setContentsMargins(10, 6, 10, 6)
-        
-        # Jezyk
-        lang_label = QLabel("Jezyk:")
-        layout.addWidget(lang_label)
-        
+
+        channel.lang_label = QLabel(txt("language_group") + ":")
+        layout.addWidget(channel.lang_label)
+
         channel.lang_combo = QComboBox()
         channel.lang_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        # Usuniecie scrollbara z listy rozwijanej
         lang_view = QListView()
         lang_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         lang_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         channel.lang_combo.setView(lang_view)
-        
-        # Próba naprawy czarnego tła przy zaokrąglonych rogach
-        try:
-            # Pobieramy kontener (QComboBoxPrivateContainer)
-            container = lang_view.parentWidget()
-            if container:
-                container.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
-                container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        except Exception:
-            pass
-        
-        channel.lang_combo.addItem("Polski", "pl-PL")
-        channel.lang_combo.addItem("Angielski", "en-US")
-        channel.lang_combo.setFixedWidth(90)
-        # Wymuszenie szerokosci popupu takiej samej jak combobox
-        lang_view.setFixedWidth(90)
+        channel.lang_combo.addItem(txt("language_polish"), "pl-PL")
+        channel.lang_combo.addItem(txt("language_english"), "en-US")
+        channel.lang_combo.setFixedWidth(92)
+        lang_view.setFixedWidth(92)
         for i in range(channel.lang_combo.count()):
             if channel.lang_combo.itemData(i) == channel.current_lang_code:
                 channel.lang_combo.setCurrentIndex(i)
@@ -1255,11 +1243,12 @@ class SpeechToClipboardApp(QMainWindow):
             lambda idx, ch=channel: self._on_language_change(ch, ch.lang_combo.itemData(idx))
         )
         layout.addWidget(channel.lang_combo)
-        
+
         # Mikrofon
-        mic_label = QLabel("Mikrofon:")
+        mic_label = QLabel(txt("mic_label"))
+        channel.mic_label = mic_label
         layout.addWidget(mic_label)
-        
+
         channel.mic_combo = QComboBox()
         channel.mic_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # Usuniecie scrollbara z listy rozwijanej
@@ -1267,35 +1256,131 @@ class SpeechToClipboardApp(QMainWindow):
         mic_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         mic_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         channel.mic_combo.setView(mic_view)
-        
+
         channel.mic_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         channel.mic_combo.currentIndexChanged.connect(
             lambda idx, ch=channel: self._on_mic_select(ch)
         )
         layout.addWidget(channel.mic_combo, 1)  # stretch factor 1
-        
+
         # Klawisz PTT
-        ptt_label = QLabel("PTT:")
+        ptt_label = QLabel(txt("ptt_label"))
+        channel.ptt_label = ptt_label
         layout.addWidget(ptt_label)
-        
+
         channel.ptt_button = QPushButton(channel.ptt_activation_key.upper())
         channel.ptt_button.setFixedWidth(70)
         channel.ptt_button.clicked.connect(
             lambda checked, ch_id=channel_id: self._activate_ptt_key_setting(ch_id)
         )
         layout.addWidget(channel.ptt_button)
-        
+
         return group
-    
+
     def _on_model_change(self, model):
         """Zmiana modelu transkrypcji."""
         self.selected_model = model
         log_message(f"Zmieniono model na: {model}")
-    
+
     def get_selected_model(self):
         """Zwraca wybrany model."""
         return self.selected_model
-    
+
+    def should_fallback_to_google(self):
+        """Zwraca, czy wolno automatycznie przejsc na Google Speech API."""
+        return self.fallback_to_google
+
+    def _set_gui_language_controls(self, lang_code):
+        """Ustawia radio buttony jezyka GUI bez zmiany jezyka transkrypcji."""
+        normalized = "en" if lang_code == "en" else "pl"
+        if hasattr(self, "polish_radio") and hasattr(self, "english_radio"):
+            self.polish_radio.blockSignals(True)
+            self.english_radio.blockSignals(True)
+            self.polish_radio.setChecked(normalized == "pl")
+            self.english_radio.setChecked(normalized == "en")
+            self.polish_radio.blockSignals(False)
+            self.english_radio.blockSignals(False)
+        self._on_gui_language_change(normalized)
+
+    def _on_gui_language_change(self, lang_code):
+        """Zmienia tylko jezyk interfejsu."""
+        global UI_LANGUAGE
+        normalized = "en" if lang_code == "en" else "pl"
+        UI_LANGUAGE = normalized
+        self.gui_language = normalized
+        self.retranslate_ui()
+        log_message(f"Zmieniono język GUI na: {normalized}")
+
+    def retranslate_ui(self):
+        """Odświeża widoczne napisy bez zmiany konfiguracji transkrypcji."""
+        self.setWindowTitle(txt("window_title"))
+
+        if hasattr(self, "model_group"):
+            self.model_group.setTitle(txt("model_group"))
+        if hasattr(self, "gui_language_group"):
+            self.gui_language_group.setTitle(txt("gui_language_group"))
+        if hasattr(self, "rules_group"):
+            self.rules_group.setTitle(txt("rules_group"))
+        if hasattr(self, "rules_help_label"):
+            self.rules_help_label.setText(txt("rules_help"))
+        if hasattr(self, "sounds_group"):
+            self.sounds_group.setTitle(txt("sounds_group"))
+        if hasattr(self, "status_group"):
+            self.status_group.setTitle(txt("status_group"))
+
+        if hasattr(self, "gemini_radio"):
+            self.gemini_radio.setText(txt("model_gemini"))
+        if hasattr(self, "google_radio"):
+            self.google_radio.setText(txt("model_google"))
+        if hasattr(self, "vosk_radio"):
+            self.vosk_radio.setText(txt("model_vosk"))
+        if hasattr(self, "polish_radio"):
+            self.polish_radio.setText(txt("language_polish"))
+        if hasattr(self, "english_radio"):
+            self.english_radio.setText(txt("language_english"))
+        if hasattr(self, "sounds_checkbox"):
+            self.sounds_checkbox.setText(txt("sounds_enable"))
+        if hasattr(self, "volume_label"):
+            self.volume_label.setText(txt("volume_label"))
+        if hasattr(self, "last_message_label"):
+            self.last_message_label.setText(txt("last_message"))
+        if hasattr(self, "save_config_btn"):
+            self.save_config_btn.setText(txt("save_config"))
+            self.save_config_btn.setToolTip(txt("save_config_tooltip"))
+
+        for channel_id, channel in self.ptt_channels.items():
+            if channel.group_box is not None:
+                channel.group_box.setTitle(fmt("channel_group", channel_id=channel_id))
+            if channel.lang_label is not None:
+                channel.lang_label.setText(txt("language_group") + ":")
+            if channel.lang_combo is not None:
+                selected_lang = channel.lang_combo.currentData()
+                channel.lang_combo.blockSignals(True)
+                channel.lang_combo.setItemText(0, txt("language_polish"))
+                channel.lang_combo.setItemText(1, txt("language_english"))
+                for i in range(channel.lang_combo.count()):
+                    if channel.lang_combo.itemData(i) == selected_lang:
+                        channel.lang_combo.setCurrentIndex(i)
+                        break
+                channel.lang_combo.blockSignals(False)
+            if channel.mic_label is not None:
+                channel.mic_label.setText(txt("mic_label"))
+            if channel.ptt_label is not None:
+                channel.ptt_label.setText(txt("ptt_label"))
+
+        self._update_model_status_label()
+        self._update_ptt_instruction_text()
+        if hasattr(self, "status_label") and not self.is_any_recording_active:
+            idle_statuses = {
+                TEXT["pl"]["ready"],
+                TEXT["en"]["ready"],
+                TEXT["pl"]["settings_loaded"],
+                TEXT["en"]["settings_loaded"],
+                TEXT["pl"]["status_initializing"],
+                TEXT["en"]["status_initializing"],
+            }
+            if self.status_label.text() in idle_statuses:
+                self.status_label.setText(txt("ready"))
     def _on_language_change(self, channel, lang_code):
         """Zmiana jezyka dla kanalu."""
         channel.current_lang_code = lang_code
