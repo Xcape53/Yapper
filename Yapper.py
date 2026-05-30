@@ -1381,11 +1381,12 @@ class SpeechToClipboardApp(QMainWindow):
             }
             if self.status_label.text() in idle_statuses:
                 self.status_label.setText(txt("ready"))
+
     def _on_language_change(self, channel, lang_code):
         """Zmiana jezyka dla kanalu."""
         channel.current_lang_code = lang_code
-        self.update_status(f"CH {channel.id}: Jezyk zmieniony na {lang_code}")
-    
+        self.update_status(f"CH {channel.id}: Język zmieniony na {lang_code}")
+
     def _on_mic_select(self, channel):
         """Wybor mikrofonu dla kanalu."""
         idx = channel.mic_combo.currentIndex()
@@ -1393,20 +1394,20 @@ class SpeechToClipboardApp(QMainWindow):
             mic = self.all_input_mics_details[idx]
             channel.mic_details.update(mic)
             self.update_status(f"CH {channel.id}: Zmieniono mikrofon na {mic['name']}")
-    
+
     def _activate_ptt_key_setting(self, channel_id):
         """Aktywacja trybu ustawiania klawisza PTT."""
         self.channel_being_configured = self.ptt_channels[channel_id]
-        self.update_status(f"Dla kanalu {channel_id} wcisnij nowy klawisz PTT (ESC by anulowac)...")
-    
+        self.update_status(fmt("ptt_key_prompt", channel_id=channel_id))
+
     def _set_preset(self, preset_text):
         """Ustawia preset custom rules."""
         self.rules_text.setPlainText(preset_text)
-    
+
     def _toggle_sounds(self, checked):
         """Wlacza/wylacza dzwieki."""
         self.sounds_enabled = checked
-        log_message(f"Dzwieki {'wlaczone' if checked else 'wylaczone'}")
+        log_message(f"Dźwięki {'włączone' if checked else 'wyłączone'}")
 
     def _on_volume_change(self, value):
         """Zmiana glosnosci."""
@@ -1420,12 +1421,12 @@ class SpeechToClipboardApp(QMainWindow):
         try:
             press_path = os.path.join(os.getcwd(), "sounds", "press.wav")
             release_path = os.path.join(os.getcwd(), "sounds", "release.wav")
-            
+
             if os.path.exists(press_path):
                 self.press_sound.setSource(QUrl.fromLocalFile(press_path))
             if os.path.exists(release_path):
                 self.release_sound.setSource(QUrl.fromLocalFile(release_path))
-                
+
             self._update_volume()
         except Exception as e:
             log_message(f"Blad inicjalizacji dzwiekow: {e}")
@@ -1440,7 +1441,7 @@ class SpeechToClipboardApp(QMainWindow):
         """Odtwarza dzwiek (press/release)."""
         if not self.sounds_enabled:
             return
-            
+
         try:
             if sound_type == "press":
                 if self.press_sound.status() == QSoundEffect.Status.Ready:
@@ -1463,18 +1464,23 @@ class SpeechToClipboardApp(QMainWindow):
                         existing_vertex_config = existing.get("vertex_ai", {})
                 except Exception:
                     pass
-            
+
             # Jesli nie ma konfiguracji vertex_ai, stworz domyslna
             if not existing_vertex_config:
                 existing_vertex_config = {
                     "project_id": "",
-                    "location": "us-central1",
-                    "client_secret_file": ""
+                    "location": "global",
+                    "client_secret_file": "",
+                    "model_id": GEMINI_MODEL
                 }
-            
+            else:
+                existing_vertex_config.setdefault("model_id", GEMINI_MODEL)
+
             settings = {
                 "model": self.selected_model,
+                "gui_language": self.gui_language,
                 "custom_rules": self.rules_text.toPlainText(),
+                "fallback_to_google": self.fallback_to_google,
                 "sounds_enabled": self.sounds_enabled,
                 "sound_volume": self.sound_volume,
                 "vertex_ai": existing_vertex_config,
@@ -1489,24 +1495,25 @@ class SpeechToClipboardApp(QMainWindow):
                 }
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2, ensure_ascii=False)
-            self.update_status(f"Ustawienia zapisane do {SETTINGS_FILE}")
+            self.update_status(fmt("settings_saved", settings_file=SETTINGS_FILE))
             log_message(f"Zapisano ustawienia: {settings}")
         except Exception as e:
-            self.update_status(f"Blad zapisu ustawien: {e}")
-            log_message(f"Blad zapisu ustawien: {e}")
-    
+            self.update_status(fmt("settings_save_error", error=e))
+            log_message(f"Błąd zapisu ustawień: {e}")
+
     def _load_settings(self):
         """Wczytuje ustawienia z pliku."""
         if not os.path.exists(SETTINGS_FILE):
             log_message("Brak pliku ustawien - uzycie domyslnych")
             return
-        
+
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-            
+
             log_message(f"Wczytano ustawienia: {settings}")
-            
+            saved_gui_language = settings.get("gui_language", settings.get("ui_language", "pl"))
+
             # Model
             saved_model = settings.get("model", "google")
             if saved_model == "gemini" and VERTEX_AVAILABLE:
@@ -1518,28 +1525,30 @@ class SpeechToClipboardApp(QMainWindow):
             else:
                 self.google_radio.setChecked(True)
                 self.selected_model = "google"
-            
+
             # Custom rules
             if "custom_rules" in settings:
                 self.rules_text.setPlainText(settings["custom_rules"])
-            
+
+            self.fallback_to_google = settings.get("fallback_to_google", DEFAULT_GOOGLE_FALLBACK)
+
             # Dzwieki
             if "sounds_enabled" in settings:
                 self.sounds_enabled = settings["sounds_enabled"]
                 self.sounds_checkbox.setChecked(self.sounds_enabled)
-            
+
             if "sound_volume" in settings:
                 self.sound_volume = settings["sound_volume"]
                 self.volume_slider.setValue(self.sound_volume)
                 self._update_volume()
-            
+
             # Kanaly
             for ch_id_str, ch_settings in settings.get("channels", {}).items():
-                ch_id = int(ch_id_str)
+                ch_id = str(ch_id_str)
                 if ch_id not in self.ptt_channels:
                     continue
                 channel = self.ptt_channels[ch_id]
-                
+
                 # Mikrofon - szukaj po nazwie
                 saved_mic_name = ch_settings.get("mic_name", "")
                 if saved_mic_name and channel.mic_combo is not None:
@@ -1547,27 +1556,30 @@ class SpeechToClipboardApp(QMainWindow):
                         if saved_mic_name in channel.mic_combo.itemText(i):
                             channel.mic_combo.setCurrentIndex(i)
                             break
-                
-                # Jezyk
+
+                # Jezyk transkrypcji kanalu
                 saved_lang = ch_settings.get("language", "pl-PL")
+                channel.current_lang_code = saved_lang
                 if channel.lang_combo is not None:
+                    channel.lang_combo.blockSignals(True)
                     for i in range(channel.lang_combo.count()):
                         if channel.lang_combo.itemData(i) == saved_lang:
                             channel.lang_combo.setCurrentIndex(i)
                             break
-                channel.current_lang_code = saved_lang
-                
+                    channel.lang_combo.blockSignals(False)
+
                 # Klawisz PTT
                 saved_ptt = ch_settings.get("ptt_key", "")
                 if saved_ptt:
                     channel.ptt_activation_key = saved_ptt
                     if channel.ptt_button is not None:
                         channel.ptt_button.setText(saved_ptt.upper())
-            
-            self.update_status("Wczytano zapisane ustawienia")
+
+            self._set_gui_language_controls(saved_gui_language)
+
+            self.update_status(txt("settings_loaded"))
         except Exception as e:
-            log_message(f"Blad wczytywania ustawien: {e}")
-    
+            log_message(f"Błąd wczytywania ustawień: {e}")
     def _update_custom_rules(self):
         """Aktualizuje globalna zmienna custom rules."""
         global custom_rules_text
