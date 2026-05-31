@@ -1713,6 +1713,7 @@ class SpeechToClipboardApp(QMainWindow):
                 key2=ch2.ptt_activation_key.upper(),
             )
         )
+
     def initialize_audio(self):
         """Inicjalizuje PyAudio i wykrywa mikrofony."""
         global pyaudio_instance
@@ -1724,8 +1725,8 @@ class SpeechToClipboardApp(QMainWindow):
                 dev_info = pyaudio_instance.get_device_info_by_index(i)
                 if dev_info.get('maxInputChannels') > 0:
                     self.all_input_mics_details.append({
-                        'index': i, 
-                        'name': dev_info.get('name', f"Urzadzenie {i}"),
+                        'index': i,
+                        'name': dev_info.get('name', f"Urządzenie {i}"),
                         'sample_rate': int(dev_info.get('defaultSampleRate', 16000)),
                         'channels': int(dev_info.get('maxInputChannels', 1)),
                         'sample_width': pyaudio_instance.get_sample_size(AUDIO_FORMAT)
@@ -1734,10 +1735,13 @@ class SpeechToClipboardApp(QMainWindow):
             return True
         except Exception as e:
             log_message(f"KRYTYCZNY BLAD: Nie mozna zainicjalizowac PyAudio: {e}")
-            QMessageBox.critical(self, "Blad PyAudio", 
-                                f"Nie mozna zainicjalizowac PyAudio: {e}\nProgram nie moze dzialac.")
+            QMessageBox.critical(
+                self,
+                txt("py_audio_error_title"),
+                fmt("py_audio_error_body", error=e),
+            )
             return False
-    
+
     def populate_mic_comboboxes(self):
         """Wypelnia combobox'y mikrofonow."""
         log_message(f"populate_mic_comboboxes: {len(self.all_input_mics_details)} mikrofonow")
@@ -1746,7 +1750,7 @@ class SpeechToClipboardApp(QMainWindow):
 
         for ch_id, channel in self.ptt_channels.items():
             log_message(f"CH {ch_id}: mic_combo = {channel.mic_combo}")
-            if channel.mic_combo is None: 
+            if channel.mic_combo is None:
                 log_message(f"CH {ch_id}: BRAK mic_combo!")
                 continue
 
@@ -1782,11 +1786,11 @@ class SpeechToClipboardApp(QMainWindow):
                 log_message(f"CH {ch_id}: Mikrofon ustawiony: {selected_mic['name']} (index={selected_mic['index']})")
             else:
                 log_message(f"CH {ch_id}: BLAD - nie znaleziono mikrofonu!")
-    
+
     def keyboard_listener_thread_func(self):
         """Watek nasluchujacy klawiatury."""
         def key_event_handler(event: keyboard.KeyboardEvent):
-            if stop_program_event.is_set(): 
+            if stop_program_event.is_set():
                 return
 
             if self.channel_being_configured and event.event_type == keyboard.KEY_DOWN:
@@ -1799,7 +1803,7 @@ class SpeechToClipboardApp(QMainWindow):
                         channel_to_configure.ptt_button.setText(event.name.upper())
                     self._update_ptt_instruction_text()
                 else:
-                    self.update_status(f"Anulowano zmiane klawisza dla kanalu {channel_to_configure.id}.")
+                    self.update_status(fmt("ptt_key_cancelled", channel_id=channel_to_configure.id))
                 return
 
             for channel in self.ptt_channels.values():
@@ -1820,24 +1824,24 @@ class SpeechToClipboardApp(QMainWindow):
         stop_program_event.wait()
         keyboard.unhook_all()
         log_message("Listener klawiatury zatrzymany.")
-    
+
     def hide_to_tray(self):
         """Chowa okno do zasobnika."""
         self.hide()
         log_message("Okno schowane do zasobnika.")
-    
+
     def show_from_tray(self):
         """Pokazuje okno z zasobnika."""
         self.show()
         self.activateWindow()
         self.raise_()
         log_message("Okno przywrocone z zasobnika.")
-    
+
     def closeEvent(self, event):
         """Obsluga zamkniecia okna - chowa do zasobnika."""
         event.ignore()
         self.hide_to_tray()
-    
+
     def quit_application(self):
         """Zamyka aplikacje."""
         global pyaudio_instance, tray_icon
@@ -1862,11 +1866,11 @@ class SpeechToClipboardApp(QMainWindow):
 
         QApplication.quit()
         log_message("Aplikacja zakonczona.")
-    
+
     def setup_tray_icon(self):
         """Konfiguruje ikone w zasobniku systemowym."""
         global tray_icon
-        
+
         def run_tray():
             try:
                 image = Image.open(resource_path("_internal/tray_icon.png"))
@@ -1875,8 +1879,8 @@ class SpeechToClipboardApp(QMainWindow):
                 image = Image.new('RGB', (64, 64), 'black')
 
             menu = (
-                pystray.MenuItem('Pokaz', lambda: self.signal_bridge.status_changed.emit("SHOW_WINDOW")),
-                pystray.MenuItem('Wyjdz', lambda: self.signal_bridge.status_changed.emit("QUIT_APP"))
+                pystray.MenuItem(txt("tray_show"), lambda: self.signal_bridge.status_changed.emit("SHOW_WINDOW")),
+                pystray.MenuItem(txt("tray_exit"), lambda: self.signal_bridge.status_changed.emit("QUIT_APP"))
             )
 
             global tray_icon
@@ -1884,10 +1888,10 @@ class SpeechToClipboardApp(QMainWindow):
             log_message("Uruchamianie ikony w zasobniku systemowym.")
             tray_icon.run()
             log_message("Ikona zasobnika zatrzymana.")
-        
+
         tray_thread = threading.Thread(target=run_tray, daemon=True)
         tray_thread.start()
-    
+
     def run(self):
         """Uruchamia aplikacje."""
         if os.path.exists(LOG_FILE_NAME):
@@ -1895,9 +1899,9 @@ class SpeechToClipboardApp(QMainWindow):
                 os.remove(LOG_FILE_NAME)
             except Exception:
                 pass
-        
+
         log_message("Uruchamianie Yapper v4 (PyQt6)")
-        
+
         # Inicjalizacja Vertex AI
         if USE_GEMINI:
             log_message("Inicjalizacja Vertex AI (Gemini)...")
@@ -1907,38 +1911,32 @@ class SpeechToClipboardApp(QMainWindow):
                 self.gemini_radio.setChecked(True)  # Przelacz na Gemini
                 self.selected_model = "gemini"
             else:
-                log_message("Vertex AI niedostepny - uzyje Google Speech API jako fallback.")
+                log_message("Vertex AI niedostępny.")
                 self.gemini_radio.setEnabled(False)
-        
+
         # Aktualizuj status modeli
-        status_parts = []
-        status_parts.append(f"Gemini: {'OK' if VERTEX_AVAILABLE else 'niedostepny'}")
-        status_parts.append("Google: OK")
-        status_parts.append(f"Vosk: {'OK' if VOSK_AVAILABLE else 'niedostepny'}")
-        self.model_status_label.setText(" | ".join(status_parts))
-        
+        self._update_model_status_label()
+
         # Inicjalizacja audio
         if self.initialize_audio():
             self.populate_mic_comboboxes()
             self._load_settings()  # Wczytaj zapisane ustawienia
             self._update_ptt_instruction_text()
-            self.status_label.setText("Gotowy.")
+            self.status_label.setText(txt("ready"))
         else:
-            self.status_label.setText("Blad inicjalizacji audio. Zamykanie...")
+            self.status_label.setText(txt("audio_init_error"))
             QTimer.singleShot(3000, self.quit_application)
             return
-        
+
         # Uruchom listener klawiatury
         kbd_thread = threading.Thread(target=self.keyboard_listener_thread_func, daemon=True)
         kbd_thread.start()
-        
+
         # Uruchom ikone zasobnika
         self.setup_tray_icon()
-        
+
         # Pokaz okno
         self.show()
-
-
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
