@@ -1580,16 +1580,106 @@ class SpeechToClipboardApp(QMainWindow):
             self.update_status(txt("settings_loaded"))
         except Exception as e:
             log_message(f"Błąd wczytywania ustawień: {e}")
+
     def _update_custom_rules(self):
         """Aktualizuje globalna zmienna custom rules."""
         global custom_rules_text
         custom_rules_text = self.rules_text.toPlainText()
-    
+
     def update_status(self, message):
         """Aktualizuje status (thread-safe)."""
         self.signal_bridge.status_changed.emit(message)
         log_message(f"STATUS: {message}")
-    
+
+    def update_processed_model_status(self, used_system, model_id=None):
+        """Aktualizuje informacje o modelu, ktory przetworzyl ostatnia wiadomosc."""
+        model_label = self._format_processed_model_label(used_system, model_id)
+        self.signal_bridge.processed_model_changed.emit(model_label)
+        log_message(f"Ostatnia wiadomosc przetworzona przez model: {model_label}")
+
+    def _update_model_status_label(self):
+        """Odświeża tekst statusu dostępności modeli."""
+        if not hasattr(self, "model_status_label"):
+            return
+
+        status_parts = []
+        if VERTEX_AVAILABLE:
+            status_parts.append(txt("model_status_gemini_ok"))
+        else:
+            status_parts.append(fmt("model_status_gemini_unavailable", reason=VERTEX_UNAVAILABLE_REASON))
+        status_parts.append(txt("model_status_google_ok"))
+        if VOSK_AVAILABLE:
+            status_parts.append(txt("model_status_vosk_ok"))
+        else:
+            status_parts.append(txt("model_status_vosk_unavailable"))
+        self.model_status_label.setText(" | ".join(status_parts))
+
+    def _format_processed_model_label(self, used_system, model_id=None):
+        if used_system == "Gemini":
+            model_id = model_id or VERTEX_MODEL_ID or GEMINI_MODEL
+            return self._format_gemini_model_name(model_id)
+        if used_system == "Google":
+            return "Google Speech API"
+        if used_system == "Google (fallback)":
+            return "Google Speech API (fallback)"
+        if used_system == "Vosk":
+            return "Vosk offline"
+        return used_system or "-"
+
+    def _format_gemini_model_name(self, model_id):
+        known_models = {
+            "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
+            "gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash-Lite Preview",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
+            "gemini-2.5-flash": "Gemini 2.5 Flash",
+            "gemini-2.5-pro": "Gemini 2.5 Pro",
+        }
+        return known_models.get(model_id, model_id)
+
+    def request_clipboard_write(self, text, source="", used_system="", model_id=""):
+        """Zleca zapis schowka do glownego watku Qt."""
+        text_to_copy = (text or "").strip()
+        if not text_to_copy:
+            log_message(
+                f"CLIPBOARD_WRITE_NOT_REQUESTED source={source} "
+                f"reason=empty_text"
+            )
+            return
+        self.signal_bridge.clipboard_write_requested.emit(text_to_copy, source or "", used_system or "", model_id or "")
+
+    def copy_text_to_clipboard(self, text, source="", used_system="", model_id=""):
+        """Kopiuje tekst do schowka w glownym watku Qt i loguje kazde nadpisanie."""
+        text_to_copy = (text or "").strip()
+        if not text_to_copy:
+            log_message(f"CLIPBOARD_WRITE_SKIPPED source={source} reason=empty_text")
+            return False
+
+        model_label = self._format_processed_model_label(used_system, model_id)
+        clipboard = QApplication.clipboard()
+
+        try:
+            previous_text = clipboard.text()
+            previous_len = len(previous_text or "")
+        except Exception as e:
+            previous_len = "unknown"
+            log_message(f"CLIPBOARD_READ_ERROR source={source} model={model_label}: {e}")
+
+        try:
+            clipboard.setText(text_to_copy)
+            QApplication.processEvents()
+            after_text = clipboard.text()
+            after_len = len(after_text or "")
+            log_message(
+                f"CLIPBOARD_WRITE source={source} model={model_label} "
+                f"previous_len={previous_len} new_len={len(text_to_copy)} after_len={after_len}"
+            )
+            if after_len == 0:
+                log_message(f"CLIPBOARD_WARNING source={source} model={model_label} after_write_empty=True")
+            return True
+        except Exception as e:
+            log_message(f"CLIPBOARD_WRITE_ERROR source={source} model={model_label}: {e}")
+            return False
+
     def _handle_signal(self, message):
         """Obsluguje sygnaly z innych watkow."""
         if message == "SHOW_WINDOW":
@@ -1598,26 +1688,31 @@ class SpeechToClipboardApp(QMainWindow):
             self.quit_application()
         else:
             self.status_label.setText(message)
-    
+
+    def _handle_processed_model_signal(self, message):
+        self.processed_model_label.setText(message)
+
     def set_ready_status(self, delay_ms=1500):
         """Ustawia status gotowosci po opoznieniu (thread-safe)."""
         # Wyslij sygnal do glownego watku - QTimer tam obsluzony
         self.signal_bridge.ready_signal.emit()
-    
+
     def _set_ready(self):
         """Slot ustawiajacy status gotowosci."""
         self._update_ptt_instruction_text()
-        self.status_label.setText("Gotowy.")
-    
+        self.status_label.setText(txt("ready"))
+
     def _update_ptt_instruction_text(self):
         """Aktualizuje tekst instrukcji PTT."""
         ch1 = self.ptt_channels["1"]
         ch2 = self.ptt_channels["2"]
-        text = (f"Kanal 1 ('{ch1.ptt_activation_key.upper()}'): Nagrywaj | "
-                f"Kanal 2 ('{ch2.ptt_activation_key.upper()}'): Nagrywaj\n"
-                f"Pusc by przetworzyc. ESC by schowac do zasobnika.")
-        self.ptt_instruction_label.setText(text)
-    
+        self.ptt_instruction_label.setText(
+            fmt(
+                "ptt_instruction",
+                key1=ch1.ptt_activation_key.upper(),
+                key2=ch2.ptt_activation_key.upper(),
+            )
+        )
     def initialize_audio(self):
         """Inicjalizuje PyAudio i wykrywa mikrofony."""
         global pyaudio_instance
