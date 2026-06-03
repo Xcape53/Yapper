@@ -33,7 +33,7 @@ pip install -r requirements.txt
 
 Lub ręcznie:
 ```bash
-pip install PyQt6 pyaudio keyboard pyperclip speech_recognition numpy pillow pystray python-dotenv
+pip install PyQt6 pyaudio keyboard pyperclip speech_recognition numpy lameenc pillow pystray python-dotenv
 ```
 
 Opcjonalnie (dla dodatkowych funkcji):
@@ -62,8 +62,9 @@ Aby korzystać z modelu Gemini, potrzebujesz:
 {
   "vertex_ai": {
     "project_id": "twoj-projekt-id",
-    "location": "us-central1",
-    "client_secret_file": "client_secret.json"
+    "location": "global",
+    "client_secret_file": "client_secret.json",
+    "model_id": "gemini-3.1-flash-lite"
   }
 }
 ```
@@ -72,6 +73,7 @@ Lub użyj zmiennych środowiskowych (`.env`):
 ```env
 GOOGLE_CLOUD_PROJECT=twoj-projekt-id
 GOOGLE_CLIENT_SECRET_FILE=client_secret.json
+GOOGLE_VERTEX_MODEL=gemini-3.1-flash-lite
 ```
 
 ## 🚀 Uruchomienie
@@ -111,7 +113,7 @@ Yapper/
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --name "Yapper" --onefile --windowed --icon="_internal/wafflin.ico" --add-data "_internal;_internal" --collect-all vosk Yapper.py
+pyinstaller --noconfirm --name "Yapper" --onefile --windowed --icon="_internal/wafflin.ico" --add-data "_internal;_internal" --collect-all vosk --collect-all lameenc Yapper.py
 ```
 
 Skompilowany plik znajdziesz w folderze `dist/`. Pamiętaj o skopiowaniu:
