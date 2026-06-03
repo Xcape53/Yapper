@@ -1937,10 +1937,15 @@ class SpeechToClipboardApp(QMainWindow):
 
         # Pokaz okno
         self.show()
+
+
 def main():
+    if not acquire_single_instance_lock():
+        return
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
+
     # Nowoczesny ciemny motyw z akcentami
     app.setStyleSheet("""
         /* Glowne tlo */
@@ -1954,7 +1959,7 @@ def main():
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 13px;
         }
-        
+
         /* GroupBox - karty z cieniem */
         QGroupBox {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1972,7 +1977,7 @@ def main():
             padding: 0 6px;
             color: #a8b4ff;
         }
-        
+
         /* ComboBox */
         QComboBox {
             background: #3a3a5c;
@@ -2043,7 +2048,7 @@ def main():
             border: none;
             background: transparent;
         }
-        
+
         /* TextEdit - obszar tekstowy */
         QTextEdit {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -2059,7 +2064,7 @@ def main():
         QTextEdit:focus {
             border: 2px solid #6c6cff;
         }
-        
+
         /* Przyciski - nowoczesne z gradientem */
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -2083,7 +2088,7 @@ def main():
             background: #3a3a4a;
             color: #666666;
         }
-        
+
         /* Radio buttony - nowoczesne */
         QRadioButton {
             spacing: 10px;
@@ -2112,13 +2117,13 @@ def main():
             border: 2px solid #404050;
             background: #2a2a35;
         }
-        
+
         /* Label */
         QLabel {
             color: #d0d0d0;
             background: transparent;
         }
-        
+
         /* ScrollBar - minimalistyczny */
         QScrollBar:vertical {
             background: #1a1a2e;
@@ -2153,7 +2158,7 @@ def main():
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
             width: 0;
         }
-        
+
         /* Tooltip */
         QToolTip {
             background-color: #2d2d4a;
@@ -2164,10 +2169,10 @@ def main():
             font-size: 12px;
         }
     """)
-    
+
     window = SpeechToClipboardApp()
     window.run()
-    
+
     sys.exit(app.exec())
 
 
