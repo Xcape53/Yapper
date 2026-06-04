@@ -51,6 +51,7 @@ yapper_log.txt
 output/
 old/
 releases/
+release_staging/
 
 # Release archives
 Yapper-*.zip
