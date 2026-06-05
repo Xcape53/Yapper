@@ -1,62 +1,50 @@
-# 🗣️ Yapper
+# Yapper
 
-**Yapper** to aplikacja do transkrypcji mowy na tekst z obsługą wielu kanałów PTT (Push-to-Talk). Rozpoznany tekst automatycznie kopiowany jest do schowka.
+Yapper to aplikacja Windows/PyQt6 do transkrypcji mowy na tekst z obsługą dwóch kanałów PTT. Rozpoznany tekst jest kopiowany do schowka tylko wtedy, gdy wybrany silnik zwróci niepustą odpowiedź.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-## ✨ Funkcje
+## Funkcje
 
-- 🎙️ **2 niezależne kanały PTT** - każdy z własnym mikrofonem, językiem i klawiszem aktywacji
-- 🤖 **3 silniki rozpoznawania mowy:**
-  - **Google Speech API** - szybkie i dokładne (wymaga internetu)
-  - **Gemini (Vertex AI)** - zaawansowane przetwarzanie z custom rules (wymaga konfiguracji GCP)
-  - **Vosk** - w pełni offline
-- 📋 **Automatyczne kopiowanie** - tekst trafia bezpośrednio do schowka
-- 🔊 **Dźwięki PTT** - konfigurowalna głośność
-- ⚙️ **Custom Rules** - własne reguły formatowania dla Gemini
-- 🖥️ **System tray** - minimalizacja do zasobnika systemowego
-- 💾 **Zapis konfiguracji** - wszystkie ustawienia zapisywane do pliku
+- 2 niezależne kanały PTT, każdy z własnym mikrofonem, językiem transkrypcji i klawiszem aktywacji.
+- Silniki transkrypcji: Gemini przez Vertex AI, Google Speech API oraz Vosk offline.
+- Gemini wysyła audio jako MP3, dzieli dłuższe nagrania na segmenty 30 s i przy błędzie quota/429 ponawia segment przez `gemini-2.5-flash-lite`.
+- Minimalna długość nagrania to 1 s; krótsze nagrania nie są wysyłane do API i nie dotykają schowka.
+- Schowek jest nadpisywany wyłącznie realnym, niepustym wynikiem transkrypcji.
+- Osobny język GUI (`Polski` / `English`) oraz osobny język transkrypcji dla kanału 1 i kanału 2.
+- Stały rozmiar okna, status ostatniej wiadomości i nazwa modelu, który ją przetworzył.
+- Dźwięki PTT, minimalizacja do zasobnika systemowego i zapis konfiguracji.
 
-## 📦 Instalacja
+## Instalacja ze źródeł
 
-### Wymagania
-- Python 3.11+
+Wymagania:
+
 - Windows 10/11
+- Python 3.11+
 
-### Instalacja zależności
+Instalacja zależności:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Lub ręcznie:
-```bash
-pip install PyQt6 pyaudio keyboard pyperclip speech_recognition numpy lameenc pillow pystray python-dotenv
-```
+Opcjonalne komponenty:
 
-Opcjonalnie (dla dodatkowych funkcji):
 ```bash
-pip install vosk                    # Offline speech recognition
-pip install google-cloud-aiplatform # Gemini/Vertex AI
+pip install vosk                    # offline speech recognition
+pip install google-cloud-aiplatform # Gemini / Vertex AI
 pip install google-auth-oauthlib    # OAuth dla Vertex AI
 ```
 
-## ⚙️ Konfiguracja
+## Konfiguracja
 
-### Podstawowa konfiguracja
+1. Skopiuj `settings.example.json` do `settings.json`.
+2. Ustaw mikrofony, klawisze PTT i języki w aplikacji.
+3. Jeśli używasz Gemini przez Vertex AI, uzupełnij sekcję `vertex_ai`.
 
-1. Skopiuj `settings.example.json` do `settings.json`
-2. Dostosuj ustawienia według potrzeb
-
-### Konfiguracja Vertex AI (Gemini)
-
-Aby korzystać z modelu Gemini, potrzebujesz:
-
-1. **Projekt Google Cloud** z włączonym Vertex AI API
-2. **OAuth Client Secret** - pobierz z Google Cloud Console
-3. Skonfiguruj `settings.json`:
+Przykład konfiguracji Vertex AI:
 
 ```json
 {
@@ -69,62 +57,83 @@ Aby korzystać z modelu Gemini, potrzebujesz:
 }
 ```
 
-Lub użyj zmiennych środowiskowych (`.env`):
+Możesz też użyć zmiennych środowiskowych:
+
 ```env
 GOOGLE_CLOUD_PROJECT=twoj-projekt-id
 GOOGLE_CLIENT_SECRET_FILE=client_secret.json
 GOOGLE_VERTEX_MODEL=gemini-3.1-flash-lite
 ```
 
-## 🚀 Uruchomienie
+Pliki lokalne z sekretami i tokenami są ignorowane przez Git:
+
+- `.env`
+- `settings.json`
+- `vertex_token.pickle`
+- `client_secret_*.json`
+- `dist/`
+
+## Uruchomienie
 
 ```bash
 python Yapper.py
 ```
 
-## 🎮 Użycie
+## Użycie
 
-1. **Wybierz model** transkrypcji (Google/Gemini/Vosk)
-2. **Skonfiguruj kanały:**
-   - Wybierz mikrofon dla każdego kanału
-   - Ustaw język (Polski/Angielski)
-   - Przypisz klawisz PTT (domyślnie: `5` i `6`)
-3. **Przytrzymaj klawisz PTT** aby nagrywać
-4. **Puść klawisz** - tekst zostanie rozpoznany i skopiowany do schowka
-5. **Wklej** tekst gdzie potrzebujesz (Ctrl+V)
+1. Wybierz model transkrypcji.
+2. Ustaw język GUI w prawym górnym boksie, jeśli chcesz zmienić napisy interfejsu.
+3. Dla kanału 1 i kanału 2 ustaw osobno język transkrypcji, mikrofon i klawisz PTT.
+4. Przytrzymaj klawisz PTT, mów, a potem puść klawisz.
+5. Jeśli transkrypcja zwróci tekst, zostanie on skopiowany do schowka.
 
-## 📁 Struktura projektu
+## Build EXE
 
-```
-Yapper/
-├── Yapper.py              # Główny plik aplikacji
-├── settings.json          # Konfiguracja (nie commitować!)
-├── settings.example.json  # Przykładowa konfiguracja
-├── sounds/                # Dźwięki PTT
-│   ├── press.wav
-│   └── release.wav
-├── _internal/             # Zasoby (ikony)
-│   ├── wafflin.ico
-│   └── tray_icon.png
-└── .env                   # Zmienne środowiskowe (nie commitować!)
-```
-
-## 🔨 Kompilacja do EXE
+Rekomendowany build korzysta z `Yapper.spec`:
 
 ```bash
 pip install pyinstaller
-pyinstaller --noconfirm --name "Yapper" --onefile --windowed --icon="_internal/wafflin.ico" --add-data "_internal;_internal" --collect-all vosk --collect-all lameenc Yapper.py
+pyinstaller --noconfirm Yapper.spec
 ```
 
-Skompilowany plik znajdziesz w folderze `dist/`. Pamiętaj o skopiowaniu:
-- `sounds/` - folder z dźwiękami
-- `settings.json` - konfiguracja (lub `client_secret.json` + `vertex_token.pickle` dla Gemini)
+Wynikowy plik znajduje się w `dist/Yapper.exe`.
 
-## 📝 License
+Do paczki release dołączaj tylko bezpieczne pliki:
 
-MIT License - możesz używać, modyfikować i dystrybuować według uznania.
+- `dist/Yapper.exe`
+- `sounds/`
+- `settings.example.json`
+- `README.md`
 
-## 🤝 Contributing
+Nie pakuj lokalnych plików `settings.json`, `vertex_token.pickle`, `client_secret_*.json`, logów ani nagrań.
 
-Pull requesty są mile widziane! Dla większych zmian, najpierw otwórz issue.
+## Struktura projektu
 
+```text
+Yapper/
+├── Yapper.py              # główna aplikacja
+├── Yapper.spec            # konfiguracja PyInstaller
+├── requirements.txt
+├── settings.example.json
+├── sounds/
+│   ├── press.wav
+│   └── release.wav
+└── _internal/
+    ├── wafflin.ico
+    └── tray_icon.png
+```
+
+## Release 1.2.0
+
+Najważniejsze zmiany:
+
+- MP3 i chunkowanie audio dla Gemini.
+- Fallback z `gemini-3.1-flash-lite` na `gemini-2.5-flash-lite` przy 429/quota.
+- Ochrona schowka przed pustymi wynikami.
+- Minimalne nagranie 1 s.
+- Rozdzielenie języka GUI od języków transkrypcji kanałów.
+- Poprawione polskie znaki w UI.
+
+## License
+
+MIT License.
