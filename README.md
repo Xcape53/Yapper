@@ -1,4 +1,4 @@
-# Yapper
+# 🗣️ Yapper
 
 Yapper to aplikacja Windows/PyQt6 do transkrypcji mowy na tekst z obsługą dwóch kanałów PTT. Rozpoznany tekst jest kopiowany do schowka tylko wtedy, gdy wybrany silnik zwróci niepustą odpowiedź.
 
