@@ -159,6 +159,7 @@ except ImportError:
     print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostępny.")
 
 # --- Konfiguracja ---
+APP_VERSION = "1.2.0"
 LOG_FILE_NAME = "yapper_log.txt"
 SETTINGS_FILE = "settings.json"  # Plik z zapisanymi ustawieniami
 SAVE_LAST_RECORDING = True
@@ -1900,7 +1901,7 @@ class SpeechToClipboardApp(QMainWindow):
             except Exception:
                 pass
 
-        log_message("Uruchamianie Yapper v4 (PyQt6)")
+        log_message(f"Uruchamianie Yapper {APP_VERSION} (PyQt6)")
 
         # Inicjalizacja Vertex AI
         if USE_GEMINI:
