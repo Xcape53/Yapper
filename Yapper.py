@@ -5,10 +5,10 @@ import wave
 import json
 import threading
 import subprocess
+import msvcrt
 import numpy as np
 import pyaudio
 import keyboard
-import pyperclip
 import speech_recognition as sr
 # import winsound  # Zastapione przez QSoundEffect dla kontroli glosnosci
 from PIL import Image
@@ -36,40 +36,50 @@ except ImportError:
 
 # --- Vertex AI / Gemini API (OAuth2) ---
 VERTEX_AVAILABLE = False
+VERTEX_UNAVAILABLE_REASON = ""
+VERTEX_MODEL_ID = ""
 vertex_model = None
 user_credentials = None
+single_instance_handle = None
 
 def load_vertex_config():
     """Wczytuje konfiguracje Vertex AI z settings.json."""
     config = {
         "project_id": "",
-        "location": "us-central1",
-        "client_secret_file": ""
+        "location": "global",
+        "client_secret_file": "",
+        "model_id": "gemini-3.1-flash-lite"
     }
-    
+
     if os.path.exists("settings.json"):
         try:
             with open("settings.json", "r", encoding="utf-8") as f:
                 settings = json.load(f)
                 vertex_config = settings.get("vertex_ai", {})
                 config["project_id"] = vertex_config.get("project_id", "")
-                config["location"] = vertex_config.get("location", "us-central1")
+                config["location"] = vertex_config.get("location", "global")
                 config["client_secret_file"] = vertex_config.get("client_secret_file", "")
+                config["model_id"] = vertex_config.get("model_id", config["model_id"])
         except Exception:
             pass
-    
+
     # Fallback do zmiennych srodowiskowych
     if not config["project_id"]:
         config["project_id"] = os.getenv("GOOGLE_CLOUD_PROJECT", "")
     if not config["client_secret_file"]:
         config["client_secret_file"] = os.getenv("GOOGLE_CLIENT_SECRET_FILE", "")
-    
+    env_model_id = os.getenv("GOOGLE_VERTEX_MODEL", "")
+    if env_model_id:
+        config["model_id"] = env_model_id
+    if not config["model_id"]:
+        config["model_id"] = GEMINI_MODEL
+
     return config
 
 def setup_vertex_ai():
     """Konfiguruje Vertex AI z OAuth2 credentials."""
-    global VERTEX_AVAILABLE, vertex_model, user_credentials
-    
+    global VERTEX_AVAILABLE, VERTEX_UNAVAILABLE_REASON, VERTEX_MODEL_ID, vertex_model, user_credentials
+
     try:
         from google_auth_oauthlib.flow import InstalledAppFlow
         from google.oauth2.credentials import Credentials
@@ -77,50 +87,65 @@ def setup_vertex_ai():
         import vertexai
         from vertexai.generative_models import GenerativeModel
         import pickle
-        
+
         vertex_config = load_vertex_config()
         PROJECT_ID = vertex_config["project_id"]
         LOCATION = vertex_config["location"]
         CLIENT_SECRET_FILE = vertex_config["client_secret_file"]
-        
+        MODEL_ID = vertex_config["model_id"]
+
         if not PROJECT_ID or not CLIENT_SECRET_FILE:
-            print("UWAGA: Brak konfiguracji Vertex AI w settings.json (project_id, client_secret_file)")
+            VERTEX_UNAVAILABLE_REASON = "Brak konfiguracji w settings.json (project_id lub client_secret_file)"
+            print(f"UWAGA: {VERTEX_UNAVAILABLE_REASON}")
             return False
-        
+
         SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
         TOKEN_FILE = "vertex_token.pickle"
-        
+
         if os.path.exists(TOKEN_FILE):
             with open(TOKEN_FILE, 'rb') as token:
                 user_credentials = pickle.load(token)
-        
+
         if not user_credentials or not user_credentials.valid:
             if user_credentials and user_credentials.expired and user_credentials.refresh_token:
-                user_credentials.refresh(Request())
-            else:
+                try:
+                    user_credentials.refresh(Request())
+                except Exception as e:
+                    log_message(f"Token Vertex AI niewazny, wymuszam ponowne logowanie: {e}")
+                    user_credentials = None
+                    try:
+                        os.remove(TOKEN_FILE)
+                    except OSError:
+                        pass
+
+            if not user_credentials or not user_credentials.valid:
                 client_secret_path = CLIENT_SECRET_FILE
                 if not os.path.exists(client_secret_path):
                     client_secret_path = resource_path(CLIENT_SECRET_FILE)
-                
+
                 if not os.path.exists(client_secret_path):
-                    print(f"UWAGA: Brak pliku {CLIENT_SECRET_FILE}")
+                    VERTEX_UNAVAILABLE_REASON = f"Brak pliku client_secret: {CLIENT_SECRET_FILE}"
+                    print(f"UWAGA: {VERTEX_UNAVAILABLE_REASON}")
                     return False
-                
+
                 flow = InstalledAppFlow.from_client_secrets_file(client_secret_path, SCOPES)
                 user_credentials = flow.run_local_server(port=0)
-            
+
             with open(TOKEN_FILE, 'wb') as token:
                 pickle.dump(user_credentials, token)
-        
+
         vertexai.init(project=PROJECT_ID, location=LOCATION, credentials=user_credentials)
-        vertex_model = GenerativeModel("gemini-2.0-flash-001")
-        
+        vertex_model = GenerativeModel(MODEL_ID)
+
         VERTEX_AVAILABLE = True
-        print(f"Vertex AI skonfigurowany (projekt: {PROJECT_ID})")
+        VERTEX_MODEL_ID = MODEL_ID
+        log_message(f"Vertex AI skonfigurowany (model: {MODEL_ID})")
+        print(f"Vertex AI skonfigurowany (projekt: {PROJECT_ID}, model: {MODEL_ID})")
         return True
-        
+
     except Exception as e:
-        print(f"UWAGA: Nie mozna skonfigurowac Vertex AI: {e}")
+        VERTEX_UNAVAILABLE_REASON = f"Błąd: {e}"
+        print(f"UWAGA: Nie można skonfigurować Vertex AI: {e}")
         VERTEX_AVAILABLE = False
         return False
 
@@ -131,7 +156,7 @@ try:
     from vosk import Model as VoskModel, KaldiRecognizer
     VOSK_AVAILABLE = True
 except ImportError:
-    print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostepny.")
+    print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostępny.")
 
 # --- Konfiguracja ---
 LOG_FILE_NAME = "yapper_log.txt"
@@ -141,20 +166,149 @@ PLAY_LAST_RECORDING = False
 DELAY_AFTER_KEY_RELEASE_MS = 500
 CHUNK_SIZE = 1024
 AUDIO_FORMAT = pyaudio.paInt16
+MIN_RECORDING_SECONDS = 1.0
 
 USE_ENSEMBLE_FOR_POLISH = True
 VOSK_MODEL_PATH = None
 
 USE_GEMINI = True
-GEMINI_MODEL = "gemini-2.0-flash-001"
+GEMINI_MODEL = "gemini-3.1-flash-lite"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+GEMINI_CHUNK_SECONDS = 30
+GEMINI_CHUNK_PAUSE_SECONDS = 0.35
+GEMINI_MP3_BITRATE_KBPS = 64
+DEFAULT_GOOGLE_FALLBACK = False
 BENCHMARK_MODE = False
 
-DEFAULT_CUSTOM_RULES = """# Przykladowe reguly (usun # zeby aktywowac):
-# - Usun wszystkie "yyy", "eee", "hmm"
-# - Zamien "nowa linia" na znak nowej linii
-# - Zamien "kropka" na "."
-# - Zamien "przecinek" na ","
+DEFAULT_CUSTOM_RULES = """# Przykładowe reguły (usuń # żeby aktywować):
+# - Usuń wszystkie "yyy", "eee", "hmm"
+# - Zamień "nowa linia" na znak nowej linii
+# - Zamień "kropka" na "."
+# - Zamień "przecinek" na ","
 # - Formatuj jako lista punktowana"""
+
+UI_LANGUAGE = "pl"
+
+TEXT = {
+    "pl": {
+        "window_title": "Yapper",
+        "model_group": "Model transkrypcji",
+        "model_gemini": "Gemini (Vertex AI)",
+        "model_google": "Google Speech API",
+        "model_vosk": "Vosk (offline)",
+        "model_status_checking": "Sprawdzanie dostępności...",
+        "gui_language_group": "Język GUI",
+        "language_group": "Język",
+        "language_polish": "Polski",
+        "language_english": "English",
+        "rules_group": "Reguły Gemini",
+        "rules_help": "Wpisz reguły (jedna na linię). Linie z # są ignorowane.",
+        "sounds_group": "Dźwięki",
+        "sounds_enable": "Włącz dźwięki PTT",
+        "volume_label": "Głośność:",
+        "status_group": "Status",
+        "status_initializing": "Inicjalizacja...",
+        "last_message": "Ostatnia wiadomość:",
+        "save_config": "Zapisz konfigurację",
+        "save_config_tooltip": "Zapisz wszystkie ustawienia do pliku",
+        "channel_group": "Kanał {channel_id}",
+        "mic_label": "Mikrofon:",
+        "ptt_label": "PTT:",
+        "ready": "Gotowy.",
+        "recording": "Nagrywanie...",
+        "processing": "Przetwarzanie...",
+        "select_microphone": "BŁĄD: Wybierz mikrofon!",
+        "no_audio": "Nie nagrano dźwięku.",
+        "audio_conversion_error": "Błąd konwersji audio.",
+        "too_short": "Nagrano zbyt krótko.",
+        "too_little_data": "Nagrano zbyt mało danych.",
+        "mic_not_configured": "BŁĄD: Mikrofon nie jest skonfigurowany.",
+        "stream_open_error": "BŁĄD: Nie można otworzyć strumienia audio.",
+        "recognized": "Rozpoznano [{system}]: {text}",
+        "gemini_limit": "Limit Gemini dla tego nagrania. Tekst nie został skopiowany.",
+        "recognition_failed": "Nie udało się rozpoznać mowy.",
+        "processing_error": "Błąd przetwarzania: {error}",
+        "settings_saved": "Ustawienia zapisane do {settings_file}",
+        "settings_save_error": "Błąd zapisu ustawień: {error}",
+        "settings_loaded": "Wczytano zapisane ustawienia",
+        "ptt_key_prompt": "Dla kanału {channel_id} wciśnij nowy klawisz PTT (ESC, aby anulować)...",
+        "ptt_key_cancelled": "Anulowano zmianę klawisza dla kanału {channel_id}.",
+        "ptt_instruction": "Kanał 1 ('{key1}'): Nagrywaj | Kanał 2 ('{key2}'): Nagrywaj\nPuść, aby przetworzyć. ESC chowa do zasobnika.",
+        "py_audio_error_title": "Błąd PyAudio",
+        "py_audio_error_body": "Nie można zainicjalizować PyAudio: {error}\nProgram nie może działać.",
+        "audio_init_error": "Błąd inicjalizacji audio. Zamykanie...",
+        "tray_show": "Pokaż",
+        "tray_exit": "Wyjdź",
+        "model_status_gemini_ok": "Gemini: OK",
+        "model_status_gemini_unavailable": "Gemini: niedostępny ({reason})",
+        "model_status_google_ok": "Google: OK",
+        "model_status_vosk_ok": "Vosk: OK",
+        "model_status_vosk_unavailable": "Vosk: niedostępny",
+    },
+    "en": {
+        "window_title": "Yapper",
+        "model_group": "Transcription model",
+        "model_gemini": "Gemini (Vertex AI)",
+        "model_google": "Google Speech API",
+        "model_vosk": "Vosk (offline)",
+        "model_status_checking": "Checking availability...",
+        "gui_language_group": "GUI language",
+        "language_group": "Language",
+        "language_polish": "Polish",
+        "language_english": "English",
+        "rules_group": "Gemini rules",
+        "rules_help": "Enter rules, one per line. Lines starting with # are ignored.",
+        "sounds_group": "Sounds",
+        "sounds_enable": "Enable PTT sounds",
+        "volume_label": "Volume:",
+        "status_group": "Status",
+        "status_initializing": "Initializing...",
+        "last_message": "Last message:",
+        "save_config": "Save config",
+        "save_config_tooltip": "Save all settings to file",
+        "channel_group": "Channel {channel_id}",
+        "mic_label": "Microphone:",
+        "ptt_label": "PTT:",
+        "ready": "Ready.",
+        "recording": "Recording...",
+        "processing": "Processing...",
+        "select_microphone": "ERROR: Select a microphone!",
+        "no_audio": "No audio recorded.",
+        "audio_conversion_error": "Audio conversion error.",
+        "too_short": "Recording too short.",
+        "too_little_data": "Not enough audio data.",
+        "mic_not_configured": "ERROR: Microphone is not configured.",
+        "stream_open_error": "ERROR: Cannot open audio stream.",
+        "recognized": "Recognized [{system}]: {text}",
+        "gemini_limit": "Gemini limit for this recording. Text was not copied.",
+        "recognition_failed": "Could not recognize speech.",
+        "processing_error": "Processing error: {error}",
+        "settings_saved": "Settings saved to {settings_file}",
+        "settings_save_error": "Settings save error: {error}",
+        "settings_loaded": "Saved settings loaded",
+        "ptt_key_prompt": "For channel {channel_id}, press a new PTT key (ESC to cancel)...",
+        "ptt_key_cancelled": "Cancelled key change for channel {channel_id}.",
+        "ptt_instruction": "Channel 1 ('{key1}'): record | Channel 2 ('{key2}'): record\nRelease to process. ESC hides to tray.",
+        "py_audio_error_title": "PyAudio error",
+        "py_audio_error_body": "Cannot initialize PyAudio: {error}\nThe program cannot run.",
+        "audio_init_error": "Audio initialization error. Closing...",
+        "tray_show": "Show",
+        "tray_exit": "Exit",
+        "model_status_gemini_ok": "Gemini: OK",
+        "model_status_gemini_unavailable": "Gemini: unavailable ({reason})",
+        "model_status_google_ok": "Google: OK",
+        "model_status_vosk_ok": "Vosk: OK",
+        "model_status_vosk_unavailable": "Vosk: unavailable",
+    },
+}
+
+
+def txt(key):
+    return TEXT[UI_LANGUAGE][key]
+
+
+def fmt(key, **kwargs):
+    return txt(key).format(**kwargs)
 
 custom_rules_text = ""
 
@@ -165,16 +319,34 @@ stop_program_event = threading.Event()
 tray_icon = None
 
 
+def acquire_single_instance_lock():
+    """Zapobiega uruchomieniu kilku instancji aplikacji naraz."""
+    global single_instance_handle
+    if os.name != "nt":
+        return True
+
+    lock_path = os.path.join(os.path.expanduser("~"), ".yapper.lock")
+    handle = open(lock_path, "a+b")
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return False
+
+    single_instance_handle = handle
+    return True
+
+
 def initialize_vosk_model():
     """Inicjalizuje model Vosk dla polskiego (lazy loading)."""
     global vosk_model, VOSK_AVAILABLE
-    
+
     if not VOSK_AVAILABLE:
         return None
-    
+
     if vosk_model is not None:
         return vosk_model
-    
+
     try:
         log_message("Inicjalizacja modelu Vosk dla polskiego...")
         if VOSK_MODEL_PATH and os.path.exists(VOSK_MODEL_PATH):
@@ -192,32 +364,32 @@ def initialize_vosk_model():
 def transcribe_with_vosk(audio_data_bytes, sample_rate):
     """Transkrypcja za pomoca Vosk."""
     global vosk_model
-    
+
     if not VOSK_AVAILABLE:
-        return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Vosk niedostepny'}
-    
+        return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Vosk niedostępny'}
+
     model = initialize_vosk_model()
     if model is None:
         return {'text': '', 'confidence': 0, 'system': 'Vosk', 'error': 'Model nie zaladowany'}
-    
+
     try:
         rec = KaldiRecognizer(model, sample_rate)
         rec.SetWords(True)
-        
+
         chunk_size = 4000
         for i in range(0, len(audio_data_bytes), chunk_size):
             chunk = audio_data_bytes[i:i + chunk_size]
             rec.AcceptWaveform(chunk)
-        
+
         result = json.loads(rec.FinalResult())
         text = result.get('text', '')
-        
+
         confidence = 0.85
         if 'result' in result and result['result']:
             word_confs = [w.get('conf', 0.85) for w in result['result']]
             if word_confs:
                 confidence = sum(word_confs) / len(word_confs)
-        
+
         return {
             'text': text,
             'confidence': confidence,
@@ -245,64 +417,179 @@ def transcribe_with_google(audio_data_obj, lang_code):
         return {'text': '', 'confidence': 0, 'system': 'Google', 'error': str(e)}
 
 
+def build_wav_data(audio_bytes, sample_rate):
+    """Opakowuje surowe mono PCM 16-bit w kontener WAV."""
+    import io
+
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio_bytes)
+    wav_buffer.seek(0)
+    return wav_buffer.read()
+
+
+def build_mp3_data(audio_bytes, sample_rate):
+    """Koduje surowe mono PCM 16-bit do MP3 bez zewnetrznego ffmpeg."""
+    import lameenc
+
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(GEMINI_MP3_BITRATE_KBPS)
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_channels(1)
+    encoder.set_quality(5)
+    return bytes(encoder.encode(audio_bytes) + encoder.flush())
+
+
+def build_gemini_audio_payload(audio_bytes, sample_rate):
+    """Buduje payload audio dla Gemini, preferujac MP3 i cofajac sie do WAV."""
+    try:
+        mp3_data = build_mp3_data(audio_bytes, sample_rate)
+        if mp3_data:
+            return mp3_data, "audio/mp3"
+    except Exception as e:
+        log_message(f"Gemini: MP3 encode failed, fallback do WAV: {e}")
+
+    return build_wav_data(audio_bytes, sample_rate), "audio/wav"
+
+
+def is_quota_error(error_text):
+    """Rozpoznaje bledy limitow Vertex AI."""
+    normalized = (error_text or "").lower()
+    return "429" in normalized or "resource has been exhausted" in normalized or "quota" in normalized
+
+
+def get_gemini_model(model_id=None):
+    """Zwraca obiekt modelu Gemini dla aktualnego albo wskazanego modelu."""
+    if model_id is None or model_id == VERTEX_MODEL_ID:
+        return vertex_model
+
+    from vertexai.generative_models import GenerativeModel
+    return GenerativeModel(model_id)
+
+
+def generate_gemini_content(audio_bytes, sample_rate, prompt, model_id=None):
+    """Wysyla pojedynczy fragment audio do Gemini."""
+    from vertexai.generative_models import Part
+
+    audio_data, mime_type = build_gemini_audio_payload(audio_bytes, sample_rate)
+    audio_part = Part.from_data(audio_data, mime_type=mime_type)
+    model = get_gemini_model(model_id)
+    return model.generate_content([audio_part, prompt])
+
+
+def split_audio_chunks(audio_bytes, sample_rate, chunk_seconds):
+    """Dzieli mono PCM 16-bit na rowne fragmenty czasowe."""
+    bytes_per_second = sample_rate * 2
+    chunk_size = max(bytes_per_second, bytes_per_second * chunk_seconds)
+    for start in range(0, len(audio_bytes), chunk_size):
+        yield audio_bytes[start:start + chunk_size]
+
+
+def clean_transcript_text(text):
+    """Usuwa proste opakowanie cytatami z odpowiedzi modelu."""
+    text = (text or "").strip()
+    if text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+    if text.startswith("'") and text.endswith("'"):
+        text = text[1:-1]
+    return text.strip()
+
+
 def transcribe_with_gemini(audio_bytes, sample_rate, lang_code="pl-PL"):
     """Transkrypcja za pomoca Gemini przez Vertex AI."""
     global vertex_model, VERTEX_AVAILABLE, custom_rules_text
-    
-    if not VERTEX_AVAILABLE or vertex_model is None:
-        return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': 'Vertex AI niedostepny'}
-    
-    try:
-        import io
-        from vertexai.generative_models import Part
-        start_time = time.time()
-        
-        wav_buffer = io.BytesIO()
-        with wave.open(wav_buffer, 'wb') as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(audio_bytes)
-        wav_buffer.seek(0)
-        wav_data = wav_buffer.read()
-        
-        lang_name = "polskim" if lang_code.startswith("pl") else "angielskim"
-        
-        prompt = f"""Jestes precyzyjnym systemem transkrypcji mowy. 
-Przetranśkrybuj dokladnie to co slyszysz w nagraniu audio. 
-Jezyk: {lang_name}.
-WAZNE: Zwroc TYLKO tekst transkrypcji, bez zadnych dodatkowych komentarzy, wyjasnien ani formatowania.
-Jesli nie slyszysz zadnej mowy, zwroc pusty tekst."""
 
-        active_rules = [line.strip() for line in custom_rules_text.split('\n') 
+    if not VERTEX_AVAILABLE or vertex_model is None:
+        return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': 'Vertex AI niedostępny'}
+
+    try:
+        start_time = time.time()
+        lang_name = "polskim" if lang_code.startswith("pl") else "angielskim"
+
+        prompt = f"""Jesteś precyzyjnym systemem transkrypcji mowy.
+Przetranskrybuj dokładnie to, co słyszysz w nagraniu audio.
+Język: {lang_name}.
+WAŻNE: Zwróć TYLKO tekst transkrypcji, bez żadnych dodatkowych komentarzy, wyjaśnień ani formatowania.
+Jeśli nie słyszysz żadnej mowy, zwróć pusty tekst."""
+
+        active_rules = [line.strip() for line in custom_rules_text.split('\n')
                        if line.strip() and not line.strip().startswith('#')]
-        
+
         if active_rules:
             rules_text = '\n'.join(f"- {rule}" for rule in active_rules)
             prompt += f"""
 
-DODATKOWE REGULY PRZETWARZANIA (zastosuj je do transkrypcji):
+DODATKOWE REGUŁY PRZETWARZANIA (zastosuj je do transkrypcji):
 {rules_text}"""
 
-        audio_part = Part.from_data(wav_data, mime_type="audio/wav")
-        response = vertex_model.generate_content([audio_part, prompt])
-        
+        duration_seconds = len(audio_bytes) / max(sample_rate * 2, 1)
+        used_model_id = VERTEX_MODEL_ID or GEMINI_MODEL
+
+        if duration_seconds > GEMINI_CHUNK_SECONDS:
+            chunk_count = (len(audio_bytes) + (sample_rate * 2 * GEMINI_CHUNK_SECONDS) - 1) // (sample_rate * 2 * GEMINI_CHUNK_SECONDS)
+            log_message(
+                f"Gemini: dlugie audio {duration_seconds:.1f}s, "
+                f"dzielenie na {chunk_count} fragmentow po {GEMINI_CHUNK_SECONDS}s, format MP3"
+            )
+            partial_texts = []
+
+            for index, chunk in enumerate(split_audio_chunks(audio_bytes, sample_rate, GEMINI_CHUNK_SECONDS), start=1):
+                try:
+                    log_message(f"Gemini chunk {index}/{chunk_count}: model {used_model_id}")
+                    response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                except Exception as chunk_error:
+                    error_text = str(chunk_error)
+                    if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
+                        log_message(
+                            f"Gemini chunk {index}/{chunk_count}: quota na {used_model_id}, "
+                            f"retry tego samego fragmentu przez {GEMINI_FALLBACK_MODEL}"
+                        )
+                        used_model_id = GEMINI_FALLBACK_MODEL
+                        response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                    else:
+                        raise
+
+                chunk_text = response.text.strip() if response.text else ''
+                if chunk_text:
+                    partial_texts.append(clean_transcript_text(chunk_text))
+                time.sleep(GEMINI_CHUNK_PAUSE_SECONDS)
+
+            elapsed_time = time.time() - start_time
+            return {
+                'text': " ".join(partial_texts).strip(),
+                'confidence': 0.95,
+                'system': 'Gemini',
+                'model_id': used_model_id,
+                'latency': elapsed_time
+            }
+
+        try:
+            log_message(f"Gemini: krotkie audio {duration_seconds:.1f}s, format MP3, model {used_model_id}")
+            response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+        except Exception as e:
+            error_text = str(e)
+            if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
+                log_message(f"Gemini quota na {used_model_id}, retry tego samego audio przez {GEMINI_FALLBACK_MODEL}")
+                used_model_id = GEMINI_FALLBACK_MODEL
+                response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+            else:
+                raise
+
         elapsed_time = time.time() - start_time
-        
         text = response.text.strip() if response.text else ''
-        
-        if text.startswith('"') and text.endswith('"'):
-            text = text[1:-1]
-        if text.startswith("'") and text.endswith("'"):
-            text = text[1:-1]
-        
+        text = clean_transcript_text(text)
+
         return {
             'text': text,
             'confidence': 0.95,
             'system': 'Gemini',
+            'model_id': used_model_id,
             'latency': elapsed_time
         }
-        
+
     except Exception as e:
         log_message(f"Blad Gemini: {e}")
         return {'text': '', 'confidence': 0, 'system': 'Gemini', 'error': str(e)}
@@ -330,6 +617,8 @@ def log_message(message):
 class SignalBridge(QObject):
     """Most do komunikacji miedzy watkami a GUI Qt."""
     status_changed = pyqtSignal(str)
+    processed_model_changed = pyqtSignal(str)
+    clipboard_write_requested = pyqtSignal(str, str, str, str)
     ready_signal = pyqtSignal()
     stop_recording_ch1 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 1
     stop_recording_ch2 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 2
@@ -356,12 +645,16 @@ class PttChannel:
         self.current_recording_actual_channels = 1
 
         # Elementy GUI (Qt)
+        self.group_box = None
+        self.lang_label = None
         self.lang_combo = None
+        self.mic_label = None
         self.mic_combo = None
+        self.ptt_label = None
         self.ptt_button = None
 
     def update_status(self, message):
-        self.app.update_status(f"[Kanal {self.id}] {message}")
+        self.app.update_status(f"[Kanał {self.id}] {message}")
 
     def start_recording(self):
         # Ignoruj jesli juz nagrywamy lub program sie zamyka
@@ -369,26 +662,26 @@ class PttChannel:
             return
 
         if self.mic_details.get("index") is None:
-            self.update_status("BLAD: Wybierz mikrofon!")
+            self.update_status(txt("select_microphone"))
             return
 
         self.ptt_key_pressed = True
         self.is_recording_active = True
         self.app.is_any_recording_active = True
-        
+
         # Dzwiek startu
         self.app._play_sound("press")
-        
-        self.update_status("Nagrywanie...")
+
+        self.update_status(txt("recording"))
         threading.Thread(target=self.record_audio_loop, daemon=True).start()
 
     def stop_recording_and_process(self):
         # Natychmiast resetuj flage klawisza
         if not self.ptt_key_pressed:
             return
-        
+
         self.ptt_key_pressed = False
-        
+
         if stop_program_event.is_set() or not self.is_recording_active:
             return
 
@@ -412,10 +705,10 @@ class PttChannel:
         # Poczekaj az watek nagrywania sie zakonczy
         time.sleep(0.15)
 
-        self.update_status("Przetwarzanie...")
+        self.update_status(txt("processing"))
 
         if not self.audio_frames:
-            self.update_status("Nie nagrano dzwieku.")
+            self.update_status(txt("no_audio"))
             self.app.set_ready_status()
             return
 
@@ -432,16 +725,27 @@ class PttChannel:
                 recorded_audio_data = audio_mono.tobytes()
             except Exception as e:
                 log_message(f"CH {self.id}: Blad konwersji do mono: {e}")
-                self.update_status("Blad konwersji audio.")
+                self.update_status(txt("audio_conversion_error"))
                 self.app.set_ready_status()
                 return
+
+        sample_rate = self.mic_details['sample_rate']
+        duration_seconds = len(recorded_audio_data) / max(sample_rate * 2, 1)
+        if duration_seconds < MIN_RECORDING_SECONDS:
+            log_message(
+                f"CH {self.id}: Nagranie za krotkie ({duration_seconds:.2f}s < "
+                f"{MIN_RECORDING_SECONDS:.2f}s). Nie wysylam do API i nie dotykam schowka."
+            )
+            self.update_status(txt("too_short"))
+            self.app.set_ready_status()
+            return
 
         recording_filename = f"last_recording_ch{self.id}.wav"
         if SAVE_LAST_RECORDING or PLAY_LAST_RECORDING:
             self.save_and_play_audio(recorded_audio_data, recording_filename)
 
         if len(recorded_audio_data) < 400:
-            self.update_status("Nagrano zbyt malo danych.")
+            self.update_status(txt("too_little_data"))
             self.app.set_ready_status()
             return
 
@@ -453,32 +757,36 @@ class PttChannel:
         try:
             audio_data_obj = sr.AudioData(recorded_audio_data, self.mic_details['sample_rate'],
                                           self.mic_details['sample_width'])
-            
+
             text = None
             used_system = None
-            
+            used_model_id = None
+            last_error = None
+
             selected = self.app.get_selected_model()
             log_message(f"CH {self.id}: Wybrany model: {selected}")
-            
+
             # --- GEMINI ---
             if selected == "gemini" and VERTEX_AVAILABLE:
                 self.update_status("Gemini...")
                 gemini_start = time.time()
                 gemini_result = transcribe_with_gemini(
-                    recorded_audio_data, 
+                    recorded_audio_data,
                     self.mic_details['sample_rate'],
                     self.current_lang_code
                 )
                 gemini_time = time.time() - gemini_start
                 text = gemini_result.get('text', '')
-                
+
                 if text:
                     log_message(f"CH {self.id}: Gemini OK w {gemini_time:.2f}s")
                     used_system = "Gemini"
+                    used_model_id = gemini_result.get('model_id')
                 else:
                     error = gemini_result.get('error', 'Brak tekstu')
+                    last_error = error
                     log_message(f"CH {self.id}: Gemini nie rozpoznal: {error}")
-            
+
             # --- GOOGLE ---
             elif selected == "google":
                 self.update_status("Google Speech...")
@@ -492,7 +800,7 @@ class PttChannel:
                     log_message(f"CH {self.id}: Google nie rozpoznal mowy")
                 except sr.RequestError as e:
                     log_message(f"CH {self.id}: Google API blad: {e}")
-            
+
             # --- VOSK ---
             elif selected == "vosk" and VOSK_AVAILABLE:
                 self.update_status("Vosk (offline)...")
@@ -500,13 +808,13 @@ class PttChannel:
                 vosk_result = transcribe_with_vosk(recorded_audio_data, self.mic_details['sample_rate'])
                 vosk_time = time.time() - vosk_start
                 text = vosk_result.get('text', '')
-                
+
                 if text:
                     log_message(f"CH {self.id}: Vosk OK w {vosk_time:.2f}s")
                     used_system = "Vosk"
-            
+
             # --- FALLBACK ---
-            if not text and selected != "google":
+            if not text and selected != "google" and self.app.should_fallback_to_google():
                 self.update_status("Fallback: Google Speech...")
                 try:
                     google_start = time.time()
@@ -518,17 +826,29 @@ class PttChannel:
                     log_message(f"CH {self.id}: Google fallback nie rozpoznal")
                 except sr.RequestError as e:
                     log_message(f"CH {self.id}: Google fallback blad: {e}")
-            
+            elif not text and selected != "google":
+                log_message(f"CH {self.id}: Google fallback wylaczony")
+
             # --- WYNIK ---
+            text = (text or "").strip()
             if text:
-                self.update_status(f"Rozpoznano [{used_system}]: {text}")
-                pyperclip.copy(text)
+                self.update_status(fmt("recognized", system=used_system, text=text))
+                self.app.update_processed_model_status(used_system, used_model_id)
+                self.app.request_clipboard_write(
+                    text,
+                    source=f"CH {self.id}",
+                    used_system=used_system or "",
+                    model_id=used_model_id or ""
+                )
             else:
-                self.update_status("Nie udalo sie rozpoznac mowy.")
+                if is_quota_error(last_error):
+                    self.update_status(txt("gemini_limit"))
+                else:
+                    self.update_status(txt("recognition_failed"))
                 log_message(f"CH {self.id}: Wszystkie systemy zawiodly")
-                    
+
         except Exception as e:
-            self.update_status(f"Blad przetwarzania: {e}")
+            self.update_status(fmt("processing_error", error=e))
             log_message(f"CH {self.id}: Blad podczas przetwarzania: {e}")
 
         self.app.set_ready_status()
@@ -537,7 +857,7 @@ class PttChannel:
         global pyaudio_instance
 
         if self.mic_details.get("index") is None:
-            self.update_status("BLAD: Mikrofon nie jest skonfigurowany.")
+            self.update_status(txt("mic_not_configured"))
             self.is_recording_active = False
             return
 
@@ -548,7 +868,7 @@ class PttChannel:
                 continue
 
             try:
-                log_message(f"CH {self.id}: Proba otwarcia strumienia z {target_ch} kanalem/ami...")
+                log_message(f"CH {self.id}: Próba otwarcia strumienia z {target_ch} kanałem/ami...")
                 self.pyaudio_stream = pyaudio_instance.open(
                     format=AUDIO_FORMAT, channels=target_ch,
                     rate=self.mic_details['sample_rate'], input=True,
@@ -556,12 +876,12 @@ class PttChannel:
                     input_device_index=self.mic_details['index'])
                 self.current_recording_actual_channels = target_ch
                 stream_opened_successfully = True
-                log_message(f"CH {self.id}: SUKCES. Strumien otwarty.")
+                log_message(f"CH {self.id}: SUKCES. Strumień otwarty.")
             except Exception as e:
-                log_message(f"CH {self.id}: BLAD otwarcia strumienia: {e}")
+                log_message(f"CH {self.id}: BŁĄD otwarcia strumienia: {e}")
 
         if not stream_opened_successfully:
-            self.update_status(f"BLAD: Nie mozna otworzyc strumienia audio.")
+            self.update_status(txt("stream_open_error"))
             self.is_recording_active = False
             self.app.is_any_recording_active = False
             return
@@ -607,32 +927,36 @@ class PttChannel:
 
 class SpeechToClipboardApp(QMainWindow):
     """Glowne okno aplikacji PyQt6."""
-    
+
     def __init__(self):
         super().__init__()
-        
+
         self.signal_bridge = SignalBridge()
         self.signal_bridge.status_changed.connect(self._handle_signal)
+        self.signal_bridge.processed_model_changed.connect(self._handle_processed_model_signal)
+        self.signal_bridge.clipboard_write_requested.connect(self.copy_text_to_clipboard)
         self.signal_bridge.ready_signal.connect(self._set_ready)
-        
+
         self.channel_being_configured = None
         self.is_any_recording_active = False
         self.all_input_mics_details = []
         self.selected_model = "gemini"
+        self.gui_language = UI_LANGUAGE
+        self.fallback_to_google = DEFAULT_GOOGLE_FALLBACK
         self.sounds_enabled = True
         self.sound_volume = 50  # Domyslna glosnosc 50%
-        
+
         self.press_sound = QSoundEffect()
         self.release_sound = QSoundEffect()
         self._init_sounds()
-        
+
         self.ptt_channels = {
             "1": PttChannel(channel_id="1", app=self, initial_ptt_key="5", initial_lang="pl-PL",
                             target_mic_name_start="Voicemeeter Out B1"),
             "2": PttChannel(channel_id="2", app=self, initial_ptt_key="6", initial_lang="pl-PL",
                             target_mic_name_start="CABLE Output")
         }
-        
+
         # Podlacz sygnaly stop_recording do kanalow
         self.signal_bridge.stop_recording_ch1.connect(
             lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["1"]._actual_stop_and_process)
@@ -640,14 +964,14 @@ class SpeechToClipboardApp(QMainWindow):
         self.signal_bridge.stop_recording_ch2.connect(
             lambda: QTimer.singleShot(DELAY_AFTER_KEY_RELEASE_MS, self.ptt_channels["2"]._actual_stop_and_process)
         )
-        
+
         self.init_ui()
-        
+
     def init_ui(self):
         """Inicjalizacja interfejsu uzytkownika."""
-        self.setWindowTitle("Yapper")
-        self.setMinimumSize(650, 550)
-        
+        self.setWindowTitle(txt("window_title"))
+        self.setFixedSize(787, 603)
+
         # Ikona okna
         try:
             icon_path = resource_path("_internal/wafflin.ico")
@@ -655,88 +979,110 @@ class SpeechToClipboardApp(QMainWindow):
                 self.setWindowIcon(QIcon(icon_path))
         except Exception:
             pass
-        
+
         # Glowny widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(10)
         main_layout.setContentsMargins(15, 15, 15, 15)
-        
-        # --- Model transkrypcji ---
-        model_group = QGroupBox("Model transkrypcji")
-        model_layout = QVBoxLayout(model_group)
-        
+
+        # --- Model transkrypcji + jezyk ---
+        top_controls_layout = QHBoxLayout()
+        top_controls_layout.setSpacing(10)
+
+        self.model_group = QGroupBox(txt("model_group"))
+        model_layout = QVBoxLayout(self.model_group)
+
         models_row = QHBoxLayout()
         self.model_button_group = QButtonGroup(self)
-        
+
         # Gemini - domyslnie wylaczony, wlaczony w run() po inicjalizacji Vertex AI
-        self.gemini_radio = QRadioButton("Gemini (Vertex AI)")
+        self.gemini_radio = QRadioButton(txt("model_gemini"))
         self.gemini_radio.setEnabled(False)  # Wlaczony pozniej w run()
         self.gemini_radio.toggled.connect(lambda checked: self._on_model_change("gemini") if checked else None)
         self.model_button_group.addButton(self.gemini_radio)
         models_row.addWidget(self.gemini_radio)
-        
+
         # Google
-        self.google_radio = QRadioButton("Google Speech API")
+        self.google_radio = QRadioButton(txt("model_google"))
         self.google_radio.toggled.connect(lambda checked: self._on_model_change("google") if checked else None)
         self.model_button_group.addButton(self.google_radio)
         models_row.addWidget(self.google_radio)
-        
+
         # Vosk
-        self.vosk_radio = QRadioButton("Vosk (offline)")
+        self.vosk_radio = QRadioButton(txt("model_vosk"))
         self.vosk_radio.setEnabled(VOSK_AVAILABLE)
         self.vosk_radio.toggled.connect(lambda checked: self._on_model_change("vosk") if checked else None)
         self.model_button_group.addButton(self.vosk_radio)
         models_row.addWidget(self.vosk_radio)
-        
+
         models_row.addStretch()
         model_layout.addLayout(models_row)
-        
+
         # Status dostepnosci - bedzie aktualizowany w run()
-        self.model_status_label = QLabel("Sprawdzanie dostepnosci...")
+        self.model_status_label = QLabel(txt("model_status_checking"))
         self.model_status_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
         model_layout.addWidget(self.model_status_label)
-        
+
+        self.gui_language_group = QGroupBox(txt("gui_language_group"))
+        self.gui_language_group.setFixedWidth(170)
+        language_layout = QVBoxLayout(self.gui_language_group)
+        language_layout.setContentsMargins(10, 7, 10, 8)
+        language_layout.setSpacing(5)
+
+        self.language_button_group = QButtonGroup(self)
+        self.polish_radio = QRadioButton(txt("language_polish"))
+        self.english_radio = QRadioButton(txt("language_english"))
+        self.polish_radio.setChecked(True)
+        self.polish_radio.toggled.connect(lambda checked: self._on_gui_language_change("pl") if checked else None)
+        self.english_radio.toggled.connect(lambda checked: self._on_gui_language_change("en") if checked else None)
+        self.language_button_group.addButton(self.polish_radio)
+        self.language_button_group.addButton(self.english_radio)
+        language_layout.addWidget(self.polish_radio)
+        language_layout.addWidget(self.english_radio)
+
         # Domyslnie Google dopoki Vertex AI nie zostanie sprawdzony
         self.google_radio.setChecked(True)
         self.selected_model = "google"
-        
-        main_layout.addWidget(model_group)
-        
+
+        top_controls_layout.addWidget(self.model_group, 1)
+        top_controls_layout.addWidget(self.gui_language_group)
+        main_layout.addLayout(top_controls_layout)
+
         # --- Kanaly PTT ---
         for ch_id in self.ptt_channels:
             channel_group = self._create_channel_ui(ch_id)
             main_layout.addWidget(channel_group)
-        
+
         # --- Custom Rules ---
-        rules_group = QGroupBox("Custom Rules (Gemini)")
-        rules_layout = QVBoxLayout(rules_group)
+        self.rules_group = QGroupBox(txt("rules_group"))
+        rules_layout = QVBoxLayout(self.rules_group)
         rules_layout.setSpacing(4)
         rules_layout.setContentsMargins(8, 6, 8, 8)
-        
-        help_label = QLabel("Wpisz reguly (jedna na linie). Linie z # sa ignorowane.")
-        help_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
-        rules_layout.addWidget(help_label)
-        
+
+        self.rules_help_label = QLabel(txt("rules_help"))
+        self.rules_help_label.setStyleSheet("color: #7a7aaa; font-size: 11px;")
+        rules_layout.addWidget(self.rules_help_label)
+
         self.rules_text = QTextEdit()
         self.rules_text.setPlainText(DEFAULT_CUSTOM_RULES)
         self.rules_text.setMinimumHeight(90)
         self.rules_text.setMaximumHeight(110)
         self.rules_text.textChanged.connect(self._update_custom_rules)
         rules_layout.addWidget(self.rules_text)
-        
-        main_layout.addWidget(rules_group)
-        
+
+        main_layout.addWidget(self.rules_group)
+
         # --- Dolny rzad (Dzwieki i Status) ---
         bottom_row_layout = QHBoxLayout()
-        
+
         # --- Dzwieki ---
-        sounds_group = QGroupBox("Dzwieki")
-        sounds_layout = QHBoxLayout(sounds_group)
+        self.sounds_group = QGroupBox(txt("sounds_group"))
+        sounds_layout = QHBoxLayout(self.sounds_group)
         sounds_layout.setContentsMargins(8, 6, 8, 8)
-        
-        self.sounds_checkbox = QCheckBox("Wlacz dzwieki PTT")
+
+        self.sounds_checkbox = QCheckBox(txt("sounds_enable"))
         self.sounds_checkbox.setChecked(True)
         self.sounds_checkbox.toggled.connect(self._toggle_sounds)
         self.sounds_checkbox.setStyleSheet("""
@@ -761,12 +1107,12 @@ class SpeechToClipboardApp(QMainWindow):
             }
         """)
         sounds_layout.addWidget(self.sounds_checkbox)
-        
+
         # Suwak glosnosci
-        vol_label = QLabel("Glosnosc:")
-        vol_label.setStyleSheet("color: #d0d0d0; margin-left: 20px;")
-        sounds_layout.addWidget(vol_label)
-        
+        self.volume_label = QLabel(txt("volume_label"))
+        self.volume_label.setStyleSheet("color: #d0d0d0; margin-left: 20px;")
+        sounds_layout.addWidget(self.volume_label)
+
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.sound_volume)
@@ -793,36 +1139,59 @@ class SpeechToClipboardApp(QMainWindow):
             }
         """)
         sounds_layout.addWidget(self.volume_slider)
-        
+
         # Etykieta z procentami
         self.volume_percent_label = QLabel(f"{self.sound_volume}%")
         self.volume_percent_label.setStyleSheet("color: #a8b4ff; font-weight: bold; min-width: 35px; margin-left: 5px;")
         sounds_layout.addWidget(self.volume_percent_label)
-        
+
         sounds_layout.addStretch()  # Wyrownanie do lewej
-        
-        bottom_row_layout.addWidget(sounds_group, 1)
-        
+
+        bottom_row_layout.addWidget(self.sounds_group, 1)
+
         # --- Status i Zapisz ---
-        status_group = QGroupBox("Status")
-        status_layout = QHBoxLayout(status_group)
+        self.status_group = QGroupBox(txt("status_group"))
+        status_layout = QHBoxLayout(self.status_group)
         status_layout.setContentsMargins(8, 6, 8, 8)
-        
-        self.status_label = QLabel("Inicjalizacja...")
+
+        status_text_layout = QVBoxLayout()
+        status_text_layout.setSpacing(3)
+
+        self.status_label = QLabel(txt("status_initializing"))
         self.status_label.setWordWrap(True)
-        status_layout.addWidget(self.status_label, 1)
-        
+        self.status_label.setFixedHeight(34)
+        status_text_layout.addWidget(self.status_label)
+
+        self.last_message_label = QLabel(txt("last_message"))
+        self.last_message_label.setStyleSheet("color: #8f9bd8; font-size: 11px;")
+        self.last_message_label.setFixedHeight(18)
+        status_text_layout.addWidget(self.last_message_label)
+
+        status_layout.addLayout(status_text_layout, 1)
+
+        self.processed_model_label = QLabel("-")
+        self.processed_model_label.setStyleSheet("color: #8f9bd8; font-size: 11px;")
+        self.processed_model_label.setWordWrap(True)
+        self.processed_model_label.setFixedWidth(150)
+        self.processed_model_label.setFixedHeight(18)
+
         # Przycisk zapisu konfiguracji
-        save_config_btn = QPushButton("Zapisz konfiguracje")
-        save_config_btn.setFixedWidth(150)
-        save_config_btn.setToolTip("Zapisz wszystkie ustawienia do pliku")
-        save_config_btn.clicked.connect(self._save_settings)
-        status_layout.addWidget(save_config_btn)
-        
-        bottom_row_layout.addWidget(status_group, 1)
-        
+        status_actions_layout = QVBoxLayout()
+        status_actions_layout.setSpacing(4)
+
+        self.save_config_btn = QPushButton(txt("save_config"))
+        self.save_config_btn.setFixedWidth(150)
+        self.save_config_btn.setToolTip(txt("save_config_tooltip"))
+        self.save_config_btn.clicked.connect(self._save_settings)
+        status_actions_layout.addWidget(self.save_config_btn)
+        status_actions_layout.addWidget(self.processed_model_label)
+        status_actions_layout.addStretch()
+        status_layout.addLayout(status_actions_layout)
+
+        bottom_row_layout.addWidget(self.status_group, 1)
+
         main_layout.addLayout(bottom_row_layout)
-        
+
         # --- Instrukcje PTT ---
         self.ptt_instruction_label = QLabel()
         self.ptt_instruction_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -836,49 +1205,36 @@ class SpeechToClipboardApp(QMainWindow):
             color: #b0b0d0;
         """)
         main_layout.addWidget(self.ptt_instruction_label)
-        
+
         # Rozciagnij reszte
         main_layout.addStretch()
-        
+
         # Inicjalizacja custom rules
         self._update_custom_rules()
-        
+
     def _create_channel_ui(self, channel_id):
         """Tworzy UI dla kanalu PTT."""
         channel = self.ptt_channels[channel_id]
-        
-        group = QGroupBox(f"Kanal {channel_id}")
+
+        group = QGroupBox(fmt("channel_group", channel_id=channel_id))
+        channel.group_box = group
         layout = QHBoxLayout(group)
         layout.setSpacing(8)
         layout.setContentsMargins(10, 6, 10, 6)
-        
-        # Jezyk
-        lang_label = QLabel("Jezyk:")
-        layout.addWidget(lang_label)
-        
+
+        channel.lang_label = QLabel(txt("language_group") + ":")
+        layout.addWidget(channel.lang_label)
+
         channel.lang_combo = QComboBox()
         channel.lang_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        # Usuniecie scrollbara z listy rozwijanej
         lang_view = QListView()
         lang_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         lang_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         channel.lang_combo.setView(lang_view)
-        
-        # Próba naprawy czarnego tła przy zaokrąglonych rogach
-        try:
-            # Pobieramy kontener (QComboBoxPrivateContainer)
-            container = lang_view.parentWidget()
-            if container:
-                container.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint)
-                container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        except Exception:
-            pass
-        
-        channel.lang_combo.addItem("Polski", "pl-PL")
-        channel.lang_combo.addItem("Angielski", "en-US")
-        channel.lang_combo.setFixedWidth(90)
-        # Wymuszenie szerokosci popupu takiej samej jak combobox
-        lang_view.setFixedWidth(90)
+        channel.lang_combo.addItem(txt("language_polish"), "pl-PL")
+        channel.lang_combo.addItem(txt("language_english"), "en-US")
+        channel.lang_combo.setFixedWidth(92)
+        lang_view.setFixedWidth(92)
         for i in range(channel.lang_combo.count()):
             if channel.lang_combo.itemData(i) == channel.current_lang_code:
                 channel.lang_combo.setCurrentIndex(i)
@@ -887,11 +1243,12 @@ class SpeechToClipboardApp(QMainWindow):
             lambda idx, ch=channel: self._on_language_change(ch, ch.lang_combo.itemData(idx))
         )
         layout.addWidget(channel.lang_combo)
-        
+
         # Mikrofon
-        mic_label = QLabel("Mikrofon:")
+        mic_label = QLabel(txt("mic_label"))
+        channel.mic_label = mic_label
         layout.addWidget(mic_label)
-        
+
         channel.mic_combo = QComboBox()
         channel.mic_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         # Usuniecie scrollbara z listy rozwijanej
@@ -899,40 +1256,137 @@ class SpeechToClipboardApp(QMainWindow):
         mic_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         mic_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         channel.mic_combo.setView(mic_view)
-        
+
         channel.mic_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         channel.mic_combo.currentIndexChanged.connect(
             lambda idx, ch=channel: self._on_mic_select(ch)
         )
         layout.addWidget(channel.mic_combo, 1)  # stretch factor 1
-        
+
         # Klawisz PTT
-        ptt_label = QLabel("PTT:")
+        ptt_label = QLabel(txt("ptt_label"))
+        channel.ptt_label = ptt_label
         layout.addWidget(ptt_label)
-        
+
         channel.ptt_button = QPushButton(channel.ptt_activation_key.upper())
         channel.ptt_button.setFixedWidth(70)
         channel.ptt_button.clicked.connect(
             lambda checked, ch_id=channel_id: self._activate_ptt_key_setting(ch_id)
         )
         layout.addWidget(channel.ptt_button)
-        
+
         return group
-    
+
     def _on_model_change(self, model):
         """Zmiana modelu transkrypcji."""
         self.selected_model = model
         log_message(f"Zmieniono model na: {model}")
-    
+
     def get_selected_model(self):
         """Zwraca wybrany model."""
         return self.selected_model
-    
+
+    def should_fallback_to_google(self):
+        """Zwraca, czy wolno automatycznie przejsc na Google Speech API."""
+        return self.fallback_to_google
+
+    def _set_gui_language_controls(self, lang_code):
+        """Ustawia radio buttony jezyka GUI bez zmiany jezyka transkrypcji."""
+        normalized = "en" if lang_code == "en" else "pl"
+        if hasattr(self, "polish_radio") and hasattr(self, "english_radio"):
+            self.polish_radio.blockSignals(True)
+            self.english_radio.blockSignals(True)
+            self.polish_radio.setChecked(normalized == "pl")
+            self.english_radio.setChecked(normalized == "en")
+            self.polish_radio.blockSignals(False)
+            self.english_radio.blockSignals(False)
+        self._on_gui_language_change(normalized)
+
+    def _on_gui_language_change(self, lang_code):
+        """Zmienia tylko jezyk interfejsu."""
+        global UI_LANGUAGE
+        normalized = "en" if lang_code == "en" else "pl"
+        UI_LANGUAGE = normalized
+        self.gui_language = normalized
+        self.retranslate_ui()
+        log_message(f"Zmieniono język GUI na: {normalized}")
+
+    def retranslate_ui(self):
+        """Odświeża widoczne napisy bez zmiany konfiguracji transkrypcji."""
+        self.setWindowTitle(txt("window_title"))
+
+        if hasattr(self, "model_group"):
+            self.model_group.setTitle(txt("model_group"))
+        if hasattr(self, "gui_language_group"):
+            self.gui_language_group.setTitle(txt("gui_language_group"))
+        if hasattr(self, "rules_group"):
+            self.rules_group.setTitle(txt("rules_group"))
+        if hasattr(self, "rules_help_label"):
+            self.rules_help_label.setText(txt("rules_help"))
+        if hasattr(self, "sounds_group"):
+            self.sounds_group.setTitle(txt("sounds_group"))
+        if hasattr(self, "status_group"):
+            self.status_group.setTitle(txt("status_group"))
+
+        if hasattr(self, "gemini_radio"):
+            self.gemini_radio.setText(txt("model_gemini"))
+        if hasattr(self, "google_radio"):
+            self.google_radio.setText(txt("model_google"))
+        if hasattr(self, "vosk_radio"):
+            self.vosk_radio.setText(txt("model_vosk"))
+        if hasattr(self, "polish_radio"):
+            self.polish_radio.setText(txt("language_polish"))
+        if hasattr(self, "english_radio"):
+            self.english_radio.setText(txt("language_english"))
+        if hasattr(self, "sounds_checkbox"):
+            self.sounds_checkbox.setText(txt("sounds_enable"))
+        if hasattr(self, "volume_label"):
+            self.volume_label.setText(txt("volume_label"))
+        if hasattr(self, "last_message_label"):
+            self.last_message_label.setText(txt("last_message"))
+        if hasattr(self, "save_config_btn"):
+            self.save_config_btn.setText(txt("save_config"))
+            self.save_config_btn.setToolTip(txt("save_config_tooltip"))
+
+        for channel_id, channel in self.ptt_channels.items():
+            if channel.group_box is not None:
+                channel.group_box.setTitle(fmt("channel_group", channel_id=channel_id))
+            if channel.lang_label is not None:
+                channel.lang_label.setText(txt("language_group") + ":")
+            if channel.lang_combo is not None:
+                selected_lang = channel.lang_combo.currentData()
+                channel.lang_combo.blockSignals(True)
+                channel.lang_combo.setItemText(0, txt("language_polish"))
+                channel.lang_combo.setItemText(1, txt("language_english"))
+                for i in range(channel.lang_combo.count()):
+                    if channel.lang_combo.itemData(i) == selected_lang:
+                        channel.lang_combo.setCurrentIndex(i)
+                        break
+                channel.lang_combo.blockSignals(False)
+            if channel.mic_label is not None:
+                channel.mic_label.setText(txt("mic_label"))
+            if channel.ptt_label is not None:
+                channel.ptt_label.setText(txt("ptt_label"))
+
+        self._update_model_status_label()
+        self._update_ptt_instruction_text()
+        if hasattr(self, "status_label") and not self.is_any_recording_active:
+            idle_statuses = {
+                TEXT["pl"]["ready"],
+                TEXT["en"]["ready"],
+                TEXT["pl"]["settings_loaded"],
+                TEXT["en"]["settings_loaded"],
+                TEXT["pl"]["status_initializing"],
+                TEXT["en"]["status_initializing"],
+            }
+            if self.status_label.text() in idle_statuses:
+                self.status_label.setText(txt("ready"))
+
     def _on_language_change(self, channel, lang_code):
         """Zmiana jezyka dla kanalu."""
         channel.current_lang_code = lang_code
-        self.update_status(f"CH {channel.id}: Jezyk zmieniony na {lang_code}")
-    
+        self.update_status(f"CH {channel.id}: Język zmieniony na {lang_code}")
+
     def _on_mic_select(self, channel):
         """Wybor mikrofonu dla kanalu."""
         idx = channel.mic_combo.currentIndex()
@@ -940,20 +1394,20 @@ class SpeechToClipboardApp(QMainWindow):
             mic = self.all_input_mics_details[idx]
             channel.mic_details.update(mic)
             self.update_status(f"CH {channel.id}: Zmieniono mikrofon na {mic['name']}")
-    
+
     def _activate_ptt_key_setting(self, channel_id):
         """Aktywacja trybu ustawiania klawisza PTT."""
         self.channel_being_configured = self.ptt_channels[channel_id]
-        self.update_status(f"Dla kanalu {channel_id} wcisnij nowy klawisz PTT (ESC by anulowac)...")
-    
+        self.update_status(fmt("ptt_key_prompt", channel_id=channel_id))
+
     def _set_preset(self, preset_text):
         """Ustawia preset custom rules."""
         self.rules_text.setPlainText(preset_text)
-    
+
     def _toggle_sounds(self, checked):
         """Wlacza/wylacza dzwieki."""
         self.sounds_enabled = checked
-        log_message(f"Dzwieki {'wlaczone' if checked else 'wylaczone'}")
+        log_message(f"Dźwięki {'włączone' if checked else 'wyłączone'}")
 
     def _on_volume_change(self, value):
         """Zmiana glosnosci."""
@@ -967,12 +1421,12 @@ class SpeechToClipboardApp(QMainWindow):
         try:
             press_path = os.path.join(os.getcwd(), "sounds", "press.wav")
             release_path = os.path.join(os.getcwd(), "sounds", "release.wav")
-            
+
             if os.path.exists(press_path):
                 self.press_sound.setSource(QUrl.fromLocalFile(press_path))
             if os.path.exists(release_path):
                 self.release_sound.setSource(QUrl.fromLocalFile(release_path))
-                
+
             self._update_volume()
         except Exception as e:
             log_message(f"Blad inicjalizacji dzwiekow: {e}")
@@ -987,7 +1441,7 @@ class SpeechToClipboardApp(QMainWindow):
         """Odtwarza dzwiek (press/release)."""
         if not self.sounds_enabled:
             return
-            
+
         try:
             if sound_type == "press":
                 if self.press_sound.status() == QSoundEffect.Status.Ready:
@@ -1010,18 +1464,23 @@ class SpeechToClipboardApp(QMainWindow):
                         existing_vertex_config = existing.get("vertex_ai", {})
                 except Exception:
                     pass
-            
+
             # Jesli nie ma konfiguracji vertex_ai, stworz domyslna
             if not existing_vertex_config:
                 existing_vertex_config = {
                     "project_id": "",
-                    "location": "us-central1",
-                    "client_secret_file": ""
+                    "location": "global",
+                    "client_secret_file": "",
+                    "model_id": GEMINI_MODEL
                 }
-            
+            else:
+                existing_vertex_config.setdefault("model_id", GEMINI_MODEL)
+
             settings = {
                 "model": self.selected_model,
+                "gui_language": self.gui_language,
                 "custom_rules": self.rules_text.toPlainText(),
+                "fallback_to_google": self.fallback_to_google,
                 "sounds_enabled": self.sounds_enabled,
                 "sound_volume": self.sound_volume,
                 "vertex_ai": existing_vertex_config,
@@ -1036,24 +1495,25 @@ class SpeechToClipboardApp(QMainWindow):
                 }
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2, ensure_ascii=False)
-            self.update_status(f"Ustawienia zapisane do {SETTINGS_FILE}")
+            self.update_status(fmt("settings_saved", settings_file=SETTINGS_FILE))
             log_message(f"Zapisano ustawienia: {settings}")
         except Exception as e:
-            self.update_status(f"Blad zapisu ustawien: {e}")
-            log_message(f"Blad zapisu ustawien: {e}")
-    
+            self.update_status(fmt("settings_save_error", error=e))
+            log_message(f"Błąd zapisu ustawień: {e}")
+
     def _load_settings(self):
         """Wczytuje ustawienia z pliku."""
         if not os.path.exists(SETTINGS_FILE):
             log_message("Brak pliku ustawien - uzycie domyslnych")
             return
-        
+
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 settings = json.load(f)
-            
+
             log_message(f"Wczytano ustawienia: {settings}")
-            
+            saved_gui_language = settings.get("gui_language", settings.get("ui_language", "pl"))
+
             # Model
             saved_model = settings.get("model", "google")
             if saved_model == "gemini" and VERTEX_AVAILABLE:
@@ -1065,28 +1525,30 @@ class SpeechToClipboardApp(QMainWindow):
             else:
                 self.google_radio.setChecked(True)
                 self.selected_model = "google"
-            
+
             # Custom rules
             if "custom_rules" in settings:
                 self.rules_text.setPlainText(settings["custom_rules"])
-            
+
+            self.fallback_to_google = settings.get("fallback_to_google", DEFAULT_GOOGLE_FALLBACK)
+
             # Dzwieki
             if "sounds_enabled" in settings:
                 self.sounds_enabled = settings["sounds_enabled"]
                 self.sounds_checkbox.setChecked(self.sounds_enabled)
-            
+
             if "sound_volume" in settings:
                 self.sound_volume = settings["sound_volume"]
                 self.volume_slider.setValue(self.sound_volume)
                 self._update_volume()
-            
+
             # Kanaly
             for ch_id_str, ch_settings in settings.get("channels", {}).items():
-                ch_id = int(ch_id_str)
+                ch_id = str(ch_id_str)
                 if ch_id not in self.ptt_channels:
                     continue
                 channel = self.ptt_channels[ch_id]
-                
+
                 # Mikrofon - szukaj po nazwie
                 saved_mic_name = ch_settings.get("mic_name", "")
                 if saved_mic_name and channel.mic_combo is not None:
@@ -1094,37 +1556,130 @@ class SpeechToClipboardApp(QMainWindow):
                         if saved_mic_name in channel.mic_combo.itemText(i):
                             channel.mic_combo.setCurrentIndex(i)
                             break
-                
-                # Jezyk
+
+                # Jezyk transkrypcji kanalu
                 saved_lang = ch_settings.get("language", "pl-PL")
+                channel.current_lang_code = saved_lang
                 if channel.lang_combo is not None:
+                    channel.lang_combo.blockSignals(True)
                     for i in range(channel.lang_combo.count()):
                         if channel.lang_combo.itemData(i) == saved_lang:
                             channel.lang_combo.setCurrentIndex(i)
                             break
-                channel.current_lang_code = saved_lang
-                
+                    channel.lang_combo.blockSignals(False)
+
                 # Klawisz PTT
                 saved_ptt = ch_settings.get("ptt_key", "")
                 if saved_ptt:
                     channel.ptt_activation_key = saved_ptt
                     if channel.ptt_button is not None:
                         channel.ptt_button.setText(saved_ptt.upper())
-            
-            self.update_status("Wczytano zapisane ustawienia")
+
+            self._set_gui_language_controls(saved_gui_language)
+
+            self.update_status(txt("settings_loaded"))
         except Exception as e:
-            log_message(f"Blad wczytywania ustawien: {e}")
-    
+            log_message(f"Błąd wczytywania ustawień: {e}")
+
     def _update_custom_rules(self):
         """Aktualizuje globalna zmienna custom rules."""
         global custom_rules_text
         custom_rules_text = self.rules_text.toPlainText()
-    
+
     def update_status(self, message):
         """Aktualizuje status (thread-safe)."""
         self.signal_bridge.status_changed.emit(message)
         log_message(f"STATUS: {message}")
-    
+
+    def update_processed_model_status(self, used_system, model_id=None):
+        """Aktualizuje informacje o modelu, ktory przetworzyl ostatnia wiadomosc."""
+        model_label = self._format_processed_model_label(used_system, model_id)
+        self.signal_bridge.processed_model_changed.emit(model_label)
+        log_message(f"Ostatnia wiadomosc przetworzona przez model: {model_label}")
+
+    def _update_model_status_label(self):
+        """Odświeża tekst statusu dostępności modeli."""
+        if not hasattr(self, "model_status_label"):
+            return
+
+        status_parts = []
+        if VERTEX_AVAILABLE:
+            status_parts.append(txt("model_status_gemini_ok"))
+        else:
+            status_parts.append(fmt("model_status_gemini_unavailable", reason=VERTEX_UNAVAILABLE_REASON))
+        status_parts.append(txt("model_status_google_ok"))
+        if VOSK_AVAILABLE:
+            status_parts.append(txt("model_status_vosk_ok"))
+        else:
+            status_parts.append(txt("model_status_vosk_unavailable"))
+        self.model_status_label.setText(" | ".join(status_parts))
+
+    def _format_processed_model_label(self, used_system, model_id=None):
+        if used_system == "Gemini":
+            model_id = model_id or VERTEX_MODEL_ID or GEMINI_MODEL
+            return self._format_gemini_model_name(model_id)
+        if used_system == "Google":
+            return "Google Speech API"
+        if used_system == "Google (fallback)":
+            return "Google Speech API (fallback)"
+        if used_system == "Vosk":
+            return "Vosk offline"
+        return used_system or "-"
+
+    def _format_gemini_model_name(self, model_id):
+        known_models = {
+            "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
+            "gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash-Lite Preview",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
+            "gemini-2.5-flash": "Gemini 2.5 Flash",
+            "gemini-2.5-pro": "Gemini 2.5 Pro",
+        }
+        return known_models.get(model_id, model_id)
+
+    def request_clipboard_write(self, text, source="", used_system="", model_id=""):
+        """Zleca zapis schowka do glownego watku Qt."""
+        text_to_copy = (text or "").strip()
+        if not text_to_copy:
+            log_message(
+                f"CLIPBOARD_WRITE_NOT_REQUESTED source={source} "
+                f"reason=empty_text"
+            )
+            return
+        self.signal_bridge.clipboard_write_requested.emit(text_to_copy, source or "", used_system or "", model_id or "")
+
+    def copy_text_to_clipboard(self, text, source="", used_system="", model_id=""):
+        """Kopiuje tekst do schowka w glownym watku Qt i loguje kazde nadpisanie."""
+        text_to_copy = (text or "").strip()
+        if not text_to_copy:
+            log_message(f"CLIPBOARD_WRITE_SKIPPED source={source} reason=empty_text")
+            return False
+
+        model_label = self._format_processed_model_label(used_system, model_id)
+        clipboard = QApplication.clipboard()
+
+        try:
+            previous_text = clipboard.text()
+            previous_len = len(previous_text or "")
+        except Exception as e:
+            previous_len = "unknown"
+            log_message(f"CLIPBOARD_READ_ERROR source={source} model={model_label}: {e}")
+
+        try:
+            clipboard.setText(text_to_copy)
+            QApplication.processEvents()
+            after_text = clipboard.text()
+            after_len = len(after_text or "")
+            log_message(
+                f"CLIPBOARD_WRITE source={source} model={model_label} "
+                f"previous_len={previous_len} new_len={len(text_to_copy)} after_len={after_len}"
+            )
+            if after_len == 0:
+                log_message(f"CLIPBOARD_WARNING source={source} model={model_label} after_write_empty=True")
+            return True
+        except Exception as e:
+            log_message(f"CLIPBOARD_WRITE_ERROR source={source} model={model_label}: {e}")
+            return False
+
     def _handle_signal(self, message):
         """Obsluguje sygnaly z innych watkow."""
         if message == "SHOW_WINDOW":
@@ -1133,26 +1688,32 @@ class SpeechToClipboardApp(QMainWindow):
             self.quit_application()
         else:
             self.status_label.setText(message)
-    
+
+    def _handle_processed_model_signal(self, message):
+        self.processed_model_label.setText(message)
+
     def set_ready_status(self, delay_ms=1500):
         """Ustawia status gotowosci po opoznieniu (thread-safe)."""
         # Wyslij sygnal do glownego watku - QTimer tam obsluzony
         self.signal_bridge.ready_signal.emit()
-    
+
     def _set_ready(self):
         """Slot ustawiajacy status gotowosci."""
         self._update_ptt_instruction_text()
-        self.status_label.setText("Gotowy.")
-    
+        self.status_label.setText(txt("ready"))
+
     def _update_ptt_instruction_text(self):
         """Aktualizuje tekst instrukcji PTT."""
         ch1 = self.ptt_channels["1"]
         ch2 = self.ptt_channels["2"]
-        text = (f"Kanal 1 ('{ch1.ptt_activation_key.upper()}'): Nagrywaj | "
-                f"Kanal 2 ('{ch2.ptt_activation_key.upper()}'): Nagrywaj\n"
-                f"Pusc by przetworzyc. ESC by schowac do zasobnika.")
-        self.ptt_instruction_label.setText(text)
-    
+        self.ptt_instruction_label.setText(
+            fmt(
+                "ptt_instruction",
+                key1=ch1.ptt_activation_key.upper(),
+                key2=ch2.ptt_activation_key.upper(),
+            )
+        )
+
     def initialize_audio(self):
         """Inicjalizuje PyAudio i wykrywa mikrofony."""
         global pyaudio_instance
@@ -1164,8 +1725,8 @@ class SpeechToClipboardApp(QMainWindow):
                 dev_info = pyaudio_instance.get_device_info_by_index(i)
                 if dev_info.get('maxInputChannels') > 0:
                     self.all_input_mics_details.append({
-                        'index': i, 
-                        'name': dev_info.get('name', f"Urzadzenie {i}"),
+                        'index': i,
+                        'name': dev_info.get('name', f"Urządzenie {i}"),
                         'sample_rate': int(dev_info.get('defaultSampleRate', 16000)),
                         'channels': int(dev_info.get('maxInputChannels', 1)),
                         'sample_width': pyaudio_instance.get_sample_size(AUDIO_FORMAT)
@@ -1174,10 +1735,13 @@ class SpeechToClipboardApp(QMainWindow):
             return True
         except Exception as e:
             log_message(f"KRYTYCZNY BLAD: Nie mozna zainicjalizowac PyAudio: {e}")
-            QMessageBox.critical(self, "Blad PyAudio", 
-                                f"Nie mozna zainicjalizowac PyAudio: {e}\nProgram nie moze dzialac.")
+            QMessageBox.critical(
+                self,
+                txt("py_audio_error_title"),
+                fmt("py_audio_error_body", error=e),
+            )
             return False
-    
+
     def populate_mic_comboboxes(self):
         """Wypelnia combobox'y mikrofonow."""
         log_message(f"populate_mic_comboboxes: {len(self.all_input_mics_details)} mikrofonow")
@@ -1186,7 +1750,7 @@ class SpeechToClipboardApp(QMainWindow):
 
         for ch_id, channel in self.ptt_channels.items():
             log_message(f"CH {ch_id}: mic_combo = {channel.mic_combo}")
-            if channel.mic_combo is None: 
+            if channel.mic_combo is None:
                 log_message(f"CH {ch_id}: BRAK mic_combo!")
                 continue
 
@@ -1222,11 +1786,11 @@ class SpeechToClipboardApp(QMainWindow):
                 log_message(f"CH {ch_id}: Mikrofon ustawiony: {selected_mic['name']} (index={selected_mic['index']})")
             else:
                 log_message(f"CH {ch_id}: BLAD - nie znaleziono mikrofonu!")
-    
+
     def keyboard_listener_thread_func(self):
         """Watek nasluchujacy klawiatury."""
         def key_event_handler(event: keyboard.KeyboardEvent):
-            if stop_program_event.is_set(): 
+            if stop_program_event.is_set():
                 return
 
             if self.channel_being_configured and event.event_type == keyboard.KEY_DOWN:
@@ -1239,7 +1803,7 @@ class SpeechToClipboardApp(QMainWindow):
                         channel_to_configure.ptt_button.setText(event.name.upper())
                     self._update_ptt_instruction_text()
                 else:
-                    self.update_status(f"Anulowano zmiane klawisza dla kanalu {channel_to_configure.id}.")
+                    self.update_status(fmt("ptt_key_cancelled", channel_id=channel_to_configure.id))
                 return
 
             for channel in self.ptt_channels.values():
@@ -1260,24 +1824,24 @@ class SpeechToClipboardApp(QMainWindow):
         stop_program_event.wait()
         keyboard.unhook_all()
         log_message("Listener klawiatury zatrzymany.")
-    
+
     def hide_to_tray(self):
         """Chowa okno do zasobnika."""
         self.hide()
         log_message("Okno schowane do zasobnika.")
-    
+
     def show_from_tray(self):
         """Pokazuje okno z zasobnika."""
         self.show()
         self.activateWindow()
         self.raise_()
         log_message("Okno przywrocone z zasobnika.")
-    
+
     def closeEvent(self, event):
         """Obsluga zamkniecia okna - chowa do zasobnika."""
         event.ignore()
         self.hide_to_tray()
-    
+
     def quit_application(self):
         """Zamyka aplikacje."""
         global pyaudio_instance, tray_icon
@@ -1302,11 +1866,11 @@ class SpeechToClipboardApp(QMainWindow):
 
         QApplication.quit()
         log_message("Aplikacja zakonczona.")
-    
+
     def setup_tray_icon(self):
         """Konfiguruje ikone w zasobniku systemowym."""
         global tray_icon
-        
+
         def run_tray():
             try:
                 image = Image.open(resource_path("_internal/tray_icon.png"))
@@ -1315,8 +1879,8 @@ class SpeechToClipboardApp(QMainWindow):
                 image = Image.new('RGB', (64, 64), 'black')
 
             menu = (
-                pystray.MenuItem('Pokaz', lambda: self.signal_bridge.status_changed.emit("SHOW_WINDOW")),
-                pystray.MenuItem('Wyjdz', lambda: self.signal_bridge.status_changed.emit("QUIT_APP"))
+                pystray.MenuItem(txt("tray_show"), lambda: self.signal_bridge.status_changed.emit("SHOW_WINDOW")),
+                pystray.MenuItem(txt("tray_exit"), lambda: self.signal_bridge.status_changed.emit("QUIT_APP"))
             )
 
             global tray_icon
@@ -1324,10 +1888,10 @@ class SpeechToClipboardApp(QMainWindow):
             log_message("Uruchamianie ikony w zasobniku systemowym.")
             tray_icon.run()
             log_message("Ikona zasobnika zatrzymana.")
-        
+
         tray_thread = threading.Thread(target=run_tray, daemon=True)
         tray_thread.start()
-    
+
     def run(self):
         """Uruchamia aplikacje."""
         if os.path.exists(LOG_FILE_NAME):
@@ -1335,9 +1899,9 @@ class SpeechToClipboardApp(QMainWindow):
                 os.remove(LOG_FILE_NAME)
             except Exception:
                 pass
-        
+
         log_message("Uruchamianie Yapper v4 (PyQt6)")
-        
+
         # Inicjalizacja Vertex AI
         if USE_GEMINI:
             log_message("Inicjalizacja Vertex AI (Gemini)...")
@@ -1347,42 +1911,41 @@ class SpeechToClipboardApp(QMainWindow):
                 self.gemini_radio.setChecked(True)  # Przelacz na Gemini
                 self.selected_model = "gemini"
             else:
-                log_message("Vertex AI niedostepny - uzyje Google Speech API jako fallback.")
+                log_message("Vertex AI niedostępny.")
                 self.gemini_radio.setEnabled(False)
-        
+
         # Aktualizuj status modeli
-        status_parts = []
-        status_parts.append(f"Gemini: {'OK' if VERTEX_AVAILABLE else 'niedostepny'}")
-        status_parts.append("Google: OK")
-        status_parts.append(f"Vosk: {'OK' if VOSK_AVAILABLE else 'niedostepny'}")
-        self.model_status_label.setText(" | ".join(status_parts))
-        
+        self._update_model_status_label()
+
         # Inicjalizacja audio
         if self.initialize_audio():
             self.populate_mic_comboboxes()
             self._load_settings()  # Wczytaj zapisane ustawienia
             self._update_ptt_instruction_text()
-            self.status_label.setText("Gotowy.")
+            self.status_label.setText(txt("ready"))
         else:
-            self.status_label.setText("Blad inicjalizacji audio. Zamykanie...")
+            self.status_label.setText(txt("audio_init_error"))
             QTimer.singleShot(3000, self.quit_application)
             return
-        
+
         # Uruchom listener klawiatury
         kbd_thread = threading.Thread(target=self.keyboard_listener_thread_func, daemon=True)
         kbd_thread.start()
-        
+
         # Uruchom ikone zasobnika
         self.setup_tray_icon()
-        
+
         # Pokaz okno
         self.show()
 
 
 def main():
+    if not acquire_single_instance_lock():
+        return
+
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-    
+
     # Nowoczesny ciemny motyw z akcentami
     app.setStyleSheet("""
         /* Glowne tlo */
@@ -1396,7 +1959,7 @@ def main():
             font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 13px;
         }
-        
+
         /* GroupBox - karty z cieniem */
         QGroupBox {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1414,7 +1977,7 @@ def main():
             padding: 0 6px;
             color: #a8b4ff;
         }
-        
+
         /* ComboBox */
         QComboBox {
             background: #3a3a5c;
@@ -1485,7 +2048,7 @@ def main():
             border: none;
             background: transparent;
         }
-        
+
         /* TextEdit - obszar tekstowy */
         QTextEdit {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1501,7 +2064,7 @@ def main():
         QTextEdit:focus {
             border: 2px solid #6c6cff;
         }
-        
+
         /* Przyciski - nowoczesne z gradientem */
         QPushButton {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -1525,7 +2088,7 @@ def main():
             background: #3a3a4a;
             color: #666666;
         }
-        
+
         /* Radio buttony - nowoczesne */
         QRadioButton {
             spacing: 10px;
@@ -1554,13 +2117,13 @@ def main():
             border: 2px solid #404050;
             background: #2a2a35;
         }
-        
+
         /* Label */
         QLabel {
             color: #d0d0d0;
             background: transparent;
         }
-        
+
         /* ScrollBar - minimalistyczny */
         QScrollBar:vertical {
             background: #1a1a2e;
@@ -1595,7 +2158,7 @@ def main():
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
             width: 0;
         }
-        
+
         /* Tooltip */
         QToolTip {
             background-color: #2d2d4a;
@@ -1606,10 +2169,10 @@ def main():
             font-size: 12px;
         }
     """)
-    
+
     window = SpeechToClipboardApp()
     window.run()
-    
+
     sys.exit(app.exec())
 
 
