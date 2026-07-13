@@ -1,139 +1,71 @@
-# 🗣️ Yapper
+# Yapper
 
-Yapper to aplikacja Windows/PyQt6 do transkrypcji mowy na tekst z obsługą dwóch kanałów PTT. Rozpoznany tekst jest kopiowany do schowka tylko wtedy, gdy wybrany silnik zwróci niepustą odpowiedź.
+Yapper is a Windows speech-to-text application with two independent push-to-talk channels. Each channel can use its own shortcut, language, and recognition engine, making the app suitable for bilingual dictation and workflows that need separate input modes.
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
-![PyQt6](https://img.shields.io/badge/GUI-PyQt6-green.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+## Features
 
-## Funkcje
+- Two independently configured push-to-talk channels
+- Online transcription with Vertex AI Gemini or Google Speech Recognition
+- Offline transcription with Vosk
+- Automatic MP3 encoding and chunking for longer recordings
+- Clipboard output only when transcription succeeds
+- Separate Polish and English interface language
+- System tray controls, sound cues, and persistent settings
+- Automatic fallback to a lighter Gemini model when quota limits are reached
 
-- 2 niezależne kanały PTT, każdy z własnym mikrofonem, językiem transkrypcji i klawiszem aktywacji.
-- Silniki transkrypcji: Gemini przez Vertex AI, Google Speech API oraz Vosk offline.
-- Gemini wysyła audio jako MP3, dzieli dłuższe nagrania na segmenty 30 s i przy błędzie quota/429 ponawia segment przez `gemini-2.5-flash-lite`.
-- Minimalna długość nagrania to 1 s; krótsze nagrania nie są wysyłane do API i nie dotykają schowka.
-- Schowek jest nadpisywany wyłącznie realnym, niepustym wynikiem transkrypcji.
-- Osobny język GUI (`Polski` / `English`) oraz osobny język transkrypcji dla kanału 1 i kanału 2.
-- Stały rozmiar okna, status ostatniej wiadomości i nazwa modelu, który ją przetworzył.
-- Dźwięki PTT, minimalizacja do zasobnika systemowego i zapis konfiguracji.
+## Requirements
 
-## Instalacja ze źródeł
+- Windows 10 or Windows 11
+- Python 3.11 or newer
+- A working microphone
+- Credentials for the selected online engine, unless Vosk is used
 
-Wymagania:
+## Installation
 
-- Windows 10/11
-- Python 3.11+
-
-Instalacja zależności:
-
-```bash
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item settings.example.json settings.json
 ```
 
-Opcjonalne komponenty:
+Edit `settings.json` to select shortcuts, languages, and engines. Do not commit personal credentials or a populated `.env` file.
 
-```bash
-pip install vosk                    # offline speech recognition
-pip install google-cloud-aiplatform # Gemini / Vertex AI
-pip install google-auth-oauthlib    # OAuth dla Vertex AI
-```
+## Recognition engines
 
-## Konfiguracja
+### Vertex AI Gemini
 
-1. Skopiuj `settings.example.json` do `settings.json`.
-2. Ustaw mikrofony, klawisze PTT i języki w aplikacji.
-3. Jeśli używasz Gemini przez Vertex AI, uzupełnij sekcję `vertex_ai`.
+Copy `.env.example` to `.env` and provide the Google Cloud project and authentication values required by your environment. The application sends recorded audio to the configured Vertex AI model.
 
-Przykład konfiguracji Vertex AI:
+### Google Speech Recognition
 
-```json
-{
-  "vertex_ai": {
-    "project_id": "twoj-projekt-id",
-    "location": "global",
-    "client_secret_file": "client_secret.json",
-    "model_id": "gemini-3.1-flash-lite"
-  }
-}
-```
+Select the Google engine in `settings.json`. This mode requires an internet connection.
 
-Możesz też użyć zmiennych środowiskowych:
+### Vosk
 
-```env
-GOOGLE_CLOUD_PROJECT=twoj-projekt-id
-GOOGLE_CLIENT_SECRET_FILE=client_secret.json
-GOOGLE_VERTEX_MODEL=gemini-3.1-flash-lite
-```
+Install a compatible Vosk language model locally and point the channel configuration to it. Audio stays on the device in this mode.
 
-Pliki lokalne z sekretami i tokenami są ignorowane przez Git:
+## Running the application
 
-- `.env`
-- `settings.json`
-- `vertex_token.pickle`
-- `client_secret_*.json`
-- `dist/`
-
-## Uruchomienie
-
-```bash
+```powershell
 python Yapper.py
 ```
 
-## Użycie
+Hold the shortcut assigned to a channel while speaking, then release it to transcribe. Clips shorter than one second are ignored. Successful text is copied to the clipboard.
 
-1. Wybierz model transkrypcji.
-2. Ustaw język GUI w prawym górnym boksie, jeśli chcesz zmienić napisy interfejsu.
-3. Dla kanału 1 i kanału 2 ustaw osobno język transkrypcji, mikrofon i klawisz PTT.
-4. Przytrzymaj klawisz PTT, mów, a potem puść klawisz.
-5. Jeśli transkrypcja zwróci tekst, zostanie on skopiowany do schowka.
+## Building a Windows executable
 
-## Build EXE
-
-Rekomendowany build korzysta z `Yapper.spec`:
-
-```bash
+```powershell
 pip install pyinstaller
 pyinstaller --noconfirm Yapper.spec
 ```
 
-Wynikowy plik znajduje się w `dist/Yapper.exe`.
+The packaged application is written to `dist/`.
 
-Do paczki release dołączaj tylko bezpieczne pliki:
+## Privacy
 
-- `dist/Yapper.exe`
-- `sounds/`
-- `settings.example.json`
-- `README.md`
-
-Nie pakuj lokalnych plików `settings.json`, `vertex_token.pickle`, `client_secret_*.json`, logów ani nagrań.
-
-## Struktura projektu
-
-```text
-Yapper/
-├── Yapper.py              # główna aplikacja
-├── Yapper.spec            # konfiguracja PyInstaller
-├── requirements.txt
-├── settings.example.json
-├── sounds/
-│   ├── press.wav
-│   └── release.wav
-└── _internal/
-    ├── wafflin.ico
-    └── tray_icon.png
-```
-
-## Release 1.2.0
-
-Najważniejsze zmiany:
-
-- MP3 i chunkowanie audio dla Gemini.
-- Fallback z `gemini-3.1-flash-lite` na `gemini-2.5-flash-lite` przy 429/quota.
-- Ochrona schowka przed pustymi wynikami.
-- Minimalne nagranie 1 s.
-- Rozdzielenie języka GUI od języków transkrypcji kanałów.
-- Poprawione polskie znaki w UI.
+Gemini and Google modes transmit audio to external services. Vosk processes audio locally. Review the selected provider's data policy before using online transcription with sensitive material.
 
 ## License
 
-MIT License.
+No license has been granted for this repository unless a license file states otherwise.
