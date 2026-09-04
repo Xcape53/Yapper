@@ -1,5 +1,9 @@
 {
-  "model": "google",
+  "model": "groq",
+  "groq": {
+    "model_id": "whisper-large-v3",
+    "prompt": ""
+  },
   "gui_language": "pl",
   "custom_rules": "# Przykładowe reguły (usuń # żeby aktywować):\n# - Usuń wszystkie \"yyy\", \"eee\", \"hmm\"\n# - Zamień \"nowa linia\" na znak nowej linii",
   "fallback_to_google": false,
@@ -9,7 +13,7 @@
     "project_id": "your-google-cloud-project-id",
     "location": "global",
     "client_secret_file": "your-client-secret-file.json",
-    "model_id": "gemini-3.1-flash-lite"
+    "model_id": "gemini-3.5-flash"
   },
   "channels": {
     "1": {

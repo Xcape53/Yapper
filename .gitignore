@@ -46,6 +46,7 @@ ENV/
 # Audio files (generated)
 last_recording*.wav
 yapper_log.txt
+yapper_log_*.txt
 
 # Output folders
 output/

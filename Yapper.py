@@ -6,6 +6,7 @@ import json
 import threading
 import subprocess
 import msvcrt
+from groq_transcription import transcribe_pcm, GroqError, MODELS as GROQ_MODELS
 import numpy as np
 import pyaudio
 import keyboard
@@ -21,16 +22,17 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QComboBox, QPushButton, QRadioButton,
     QButtonGroup, QTextEdit, QFrame, QSplitter, QMessageBox,
     QStatusBar, QSystemTrayIcon, QMenu, QSizePolicy, QListView,
-    QCheckBox, QSlider
+    QCheckBox, QSlider, QLineEdit
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QUrl
 from PyQt6.QtGui import QIcon, QFont, QAction
 from PyQt6.QtMultimedia import QSoundEffect
 
+APP_DIR = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__))
 # --- Dotenv dla klucza API ---
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(os.path.join(APP_DIR, '.env'))
 except ImportError:
     pass
 
@@ -48,7 +50,7 @@ def load_vertex_config():
         "project_id": "",
         "location": "global",
         "client_secret_file": "",
-        "model_id": "gemini-3.1-flash-lite"
+        "model_id": "gemini-3.5-flash"
     }
 
     if os.path.exists("settings.json"):
@@ -159,7 +161,7 @@ except ImportError:
     print("UWAGA: Vosk nie jest zainstalowany. Tryb offline niedostępny.")
 
 # --- Konfiguracja ---
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 LOG_FILE_NAME = "yapper_log.txt"
 SETTINGS_FILE = "settings.json"  # Plik z zapisanymi ustawieniami
 SAVE_LAST_RECORDING = True
@@ -173,8 +175,8 @@ USE_ENSEMBLE_FOR_POLISH = True
 VOSK_MODEL_PATH = None
 
 USE_GEMINI = True
-GEMINI_MODEL = "gemini-3.1-flash-lite"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MODEL = "gemini-3.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 GEMINI_CHUNK_SECONDS = 30
 GEMINI_CHUNK_PAUSE_SECONDS = 0.35
 GEMINI_MP3_BITRATE_KBPS = 64
@@ -192,6 +194,23 @@ UI_LANGUAGE = "pl"
 
 TEXT = {
     "pl": {
+        "model_groq": "Groq (Whisper)",
+        "groq_group": "Groq - transkrypcja audio",
+        "groq_configured": "Groq: skonfigurowany.",
+        "groq_model": "Model:",
+        "groq_help": "Przytrzymaj PTT, mów i puść, aby skopiować tekst. Auto wykrywa język.",
+        "language_auto": "Auto",
+        "groq_missing_key": "Groq: brak klucza w konfiguracji .env.",
+        "groq_auth": "Groq: nieprawidłowy lub wygasły klucz API.",
+        "groq_permission": "Groq: klucz nie ma dostępu do modelu Whisper.",
+        "groq_rate_limit": "Limit Groq. Spróbuj później. Schowek bez zmian.",
+        "groq_timeout": "Groq: przekroczono czas oczekiwania. Schowek bez zmian.",
+        "groq_network": "Groq: brak połączenia z API. Schowek bez zmian.",
+        "groq_server": "Groq: usługa chwilowo niedostępna. Schowek bez zmian.",
+        "groq_request": "Groq: odrzucono nagranie lub parametry. Schowek bez zmian.",
+        "groq_response": "Groq: nieprawidłowa odpowiedź API. Schowek bez zmian.",
+        "groq_size": "Groq: plik przekracza limit. Schowek bez zmian.",
+        "groq_short_audio": "Nagranie musi trwać co najmniej sekundę.",
         "window_title": "Yapper",
         "model_group": "Model transkrypcji",
         "model_gemini": "Gemini (Vertex AI)",
@@ -247,6 +266,23 @@ TEXT = {
         "model_status_vosk_unavailable": "Vosk: niedostępny",
     },
     "en": {
+        "model_groq": "Groq (Whisper)",
+        "groq_group": "Groq - audio transcription",
+        "groq_configured": "Groq: configured.",
+        "groq_model": "Model:",
+        "groq_help": "Hold PTT, speak and release to copy the text. Auto detects the language.",
+        "language_auto": "Auto",
+        "groq_missing_key": "Groq: API key missing from .env configuration.",
+        "groq_auth": "Groq: invalid or expired API key.",
+        "groq_permission": "Groq: this key cannot access the Whisper model.",
+        "groq_rate_limit": "Groq rate limit. Try later. Clipboard unchanged.",
+        "groq_timeout": "Groq: request timed out. Clipboard unchanged.",
+        "groq_network": "Groq: cannot connect to the API. Clipboard unchanged.",
+        "groq_server": "Groq: service temporarily unavailable. Clipboard unchanged.",
+        "groq_request": "Groq: audio or parameters rejected. Clipboard unchanged.",
+        "groq_response": "Groq: invalid API response. Clipboard unchanged.",
+        "groq_size": "Groq: file exceeds the size limit. Clipboard unchanged.",
+        "groq_short_audio": "Record at least one second of audio.",
         "window_title": "Yapper",
         "model_group": "Transcription model",
         "model_gemini": "Gemini (Vertex AI)",
@@ -471,14 +507,66 @@ def get_gemini_model(model_id=None):
     return GenerativeModel(model_id)
 
 
+def extract_gemini_usage(response):
+    """Zwraca (prompt_tokens, output_tokens, total_tokens) jesli SDK je udostepnia."""
+    try:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            return (
+                getattr(usage, "prompt_token_count", 0) or 0,
+                getattr(usage, "candidates_token_count", 0) or 0,
+                getattr(usage, "total_token_count", 0) or 0,
+            )
+    except Exception:
+        pass
+    return (0, 0, 0)
+
+
 def generate_gemini_content(audio_bytes, sample_rate, prompt, model_id=None):
-    """Wysyla pojedynczy fragment audio do Gemini."""
+    """Wysyla pojedynczy fragment audio do Gemini.
+
+    Zwraca (response, metrics), gdzie metrics rozdziela czas enkodowania MP3
+    od czasu wywolania API (wyslanie + oczekiwanie + odbior w jednym callu SDK).
+    """
     from vertexai.generative_models import Part
 
+    encode_start = time.time()
     audio_data, mime_type = build_gemini_audio_payload(audio_bytes, sample_rate)
+    encode_s = time.time() - encode_start
+
     audio_part = Part.from_data(audio_data, mime_type=mime_type)
     model = get_gemini_model(model_id)
-    return model.generate_content([audio_part, prompt])
+
+    api_start = time.time()
+    response = model.generate_content([audio_part, prompt])
+    api_s = time.time() - api_start
+
+    metrics = {
+        "encode_s": encode_s,
+        "api_s": api_s,
+        "payload_bytes": len(audio_data),
+        "mime": mime_type,
+    }
+    return response, metrics
+
+
+def get_gemini_chunk_seconds():
+    """Prog dzielenia audio na fragmenty (sekundy).
+
+    Czytany z settings.json (klucz "gemini_chunk_seconds"); domyslnie
+    GEMINI_CHUNK_SECONDS. Ustaw bardzo duza wartosc (np. 100000), aby
+    wymusic JEDNO zapytanie do API zamiast chunkowania - do porownania
+    strategii single-shot vs chunking.
+    """
+    value = GEMINI_CHUNK_SECONDS
+    if os.path.exists("settings.json"):
+        try:
+            with open("settings.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            value = int(cfg.get("gemini_chunk_seconds", value))
+        except Exception:
+            pass
+    return max(1, value)
 
 
 def split_audio_chunks(audio_bytes, sample_rate, chunk_seconds):
@@ -528,19 +616,30 @@ DODATKOWE REGUŁY PRZETWARZANIA (zastosuj je do transkrypcji):
 
         duration_seconds = len(audio_bytes) / max(sample_rate * 2, 1)
         used_model_id = VERTEX_MODEL_ID or GEMINI_MODEL
+        chunk_seconds = get_gemini_chunk_seconds()
 
-        if duration_seconds > GEMINI_CHUNK_SECONDS:
-            chunk_count = (len(audio_bytes) + (sample_rate * 2 * GEMINI_CHUNK_SECONDS) - 1) // (sample_rate * 2 * GEMINI_CHUNK_SECONDS)
+        log_message(
+            f"Gemini START: audio={duration_seconds:.1f}s pcm={len(audio_bytes)/1024:.0f}KB "
+            f"sr={sample_rate}Hz model={used_model_id} prog_chunkowania={chunk_seconds}s"
+        )
+
+        if duration_seconds > chunk_seconds:
+            chunk_count = (len(audio_bytes) + (sample_rate * 2 * chunk_seconds) - 1) // (sample_rate * 2 * chunk_seconds)
             log_message(
-                f"Gemini: dlugie audio {duration_seconds:.1f}s, "
-                f"dzielenie na {chunk_count} fragmentow po {GEMINI_CHUNK_SECONDS}s, format MP3"
+                f"Gemini STRATEGIA=chunking: {chunk_count} fragmentow po {chunk_seconds}s, "
+                f"pauza={GEMINI_CHUNK_PAUSE_SECONDS}s, format MP3"
             )
             partial_texts = []
+            sum_encode = 0.0
+            sum_api = 0.0
+            sum_payload = 0
+            sum_pause = 0.0
+            sum_tokens = 0
 
-            for index, chunk in enumerate(split_audio_chunks(audio_bytes, sample_rate, GEMINI_CHUNK_SECONDS), start=1):
+            for index, chunk in enumerate(split_audio_chunks(audio_bytes, sample_rate, chunk_seconds), start=1):
+                chunk_dur = len(chunk) / max(sample_rate * 2, 1)
                 try:
-                    log_message(f"Gemini chunk {index}/{chunk_count}: model {used_model_id}")
-                    response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                    response, m = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
                 except Exception as chunk_error:
                     error_text = str(chunk_error)
                     if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
@@ -549,46 +648,84 @@ DODATKOWE REGUŁY PRZETWARZANIA (zastosuj je do transkrypcji):
                             f"retry tego samego fragmentu przez {GEMINI_FALLBACK_MODEL}"
                         )
                         used_model_id = GEMINI_FALLBACK_MODEL
-                        response = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
+                        response, m = generate_gemini_content(chunk, sample_rate, prompt, used_model_id)
                     else:
                         raise
 
+                p_tok, o_tok, t_tok = extract_gemini_usage(response)
                 chunk_text = response.text.strip() if response.text else ''
+                chunk_text = clean_transcript_text(chunk_text)
                 if chunk_text:
-                    partial_texts.append(clean_transcript_text(chunk_text))
-                time.sleep(GEMINI_CHUNK_PAUSE_SECONDS)
+                    partial_texts.append(chunk_text)
 
+                sum_encode += m["encode_s"]
+                sum_api += m["api_s"]
+                sum_payload += m["payload_bytes"]
+                sum_tokens += t_tok
+                log_message(
+                    f"Gemini chunk {index}/{chunk_count}: model={used_model_id} "
+                    f"audio={chunk_dur:.1f}s mp3={m['payload_bytes']/1024:.0f}KB "
+                    f"encode={m['encode_s']*1000:.0f}ms api={m['api_s']:.2f}s "
+                    f"tokeny(in/out/sum)={p_tok}/{o_tok}/{t_tok} znaki={len(chunk_text)}"
+                )
+                time.sleep(GEMINI_CHUNK_PAUSE_SECONDS)
+                sum_pause += GEMINI_CHUNK_PAUSE_SECONDS
+
+            result_text = " ".join(partial_texts).strip()
             elapsed_time = time.time() - start_time
+            overhead = elapsed_time - sum_encode - sum_api - sum_pause
+            log_message(
+                f"Gemini KONIEC strategia=chunking: model={used_model_id} chunki={chunk_count} "
+                f"audio={duration_seconds:.1f}s | suma_encode={sum_encode:.2f}s suma_api={sum_api:.2f}s "
+                f"pauzy={sum_pause:.2f}s narzut={overhead:.2f}s total={elapsed_time:.2f}s "
+                f"RTF={elapsed_time/max(duration_seconds,0.01):.2f}x | mp3_total={sum_payload/1024:.0f}KB "
+                f"tokeny={sum_tokens} znaki={len(result_text)}"
+            )
             return {
-                'text': " ".join(partial_texts).strip(),
+                'text': result_text,
                 'confidence': 0.95,
                 'system': 'Gemini',
                 'model_id': used_model_id,
-                'latency': elapsed_time
+                'latency': elapsed_time,
+                'strategy': 'chunking',
+                'chunks': chunk_count,
+                'api_time': sum_api,
+                'duration': duration_seconds
             }
 
         try:
-            log_message(f"Gemini: krotkie audio {duration_seconds:.1f}s, format MP3, model {used_model_id}")
-            response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+            response, m = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
         except Exception as e:
             error_text = str(e)
             if used_model_id != GEMINI_FALLBACK_MODEL and is_quota_error(error_text):
                 log_message(f"Gemini quota na {used_model_id}, retry tego samego audio przez {GEMINI_FALLBACK_MODEL}")
                 used_model_id = GEMINI_FALLBACK_MODEL
-                response = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
+                response, m = generate_gemini_content(audio_bytes, sample_rate, prompt, used_model_id)
             else:
                 raise
 
+        p_tok, o_tok, t_tok = extract_gemini_usage(response)
         elapsed_time = time.time() - start_time
         text = response.text.strip() if response.text else ''
         text = clean_transcript_text(text)
-
+        overhead = elapsed_time - m["encode_s"] - m["api_s"]
+        log_message(
+            f"Gemini KONIEC strategia=single: model={used_model_id} "
+            f"audio={duration_seconds:.1f}s mp3={m['payload_bytes']/1024:.0f}KB "
+            f"encode={m['encode_s']*1000:.0f}ms api={m['api_s']:.2f}s narzut={overhead:.2f}s "
+            f"total={elapsed_time:.2f}s RTF={elapsed_time/max(duration_seconds,0.01):.2f}x "
+            f"tokeny(in/out/sum)={p_tok}/{o_tok}/{t_tok} znaki={len(text)}"
+        )
         return {
             'text': text,
             'confidence': 0.95,
             'system': 'Gemini',
             'model_id': used_model_id,
-            'latency': elapsed_time
+            'latency': elapsed_time,
+            'strategy': 'single',
+            'chunks': 1,
+            'api_time': m["api_s"],
+            'duration': duration_seconds
         }
 
     except Exception as e:
@@ -621,6 +758,7 @@ class SignalBridge(QObject):
     processed_model_changed = pyqtSignal(str)
     clipboard_write_requested = pyqtSignal(str, str, str, str)
     ready_signal = pyqtSignal()
+    vertex_initialized = pyqtSignal(bool)
     stop_recording_ch1 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 1
     stop_recording_ch2 = pyqtSignal()  # Sygnał do zatrzymania nagrywania kanału 2
 
@@ -660,6 +798,10 @@ class PttChannel:
     def start_recording(self):
         # Ignoruj jesli juz nagrywamy lub program sie zamyka
         if stop_program_event.is_set() or self.is_recording_active or self.app.is_any_recording_active:
+            return
+
+        if self.app.get_selected_model() == "groq" and not self.app.groq_options['api_key']:
+            self.update_status(txt("groq_missing_key"))
             return
 
         if self.mic_details.get("index") is None:
@@ -767,8 +909,25 @@ class PttChannel:
             selected = self.app.get_selected_model()
             log_message(f"CH {self.id}: Wybrany model: {selected}")
 
+            # Groq failures stop here; never silently send audio to another provider.
+            if selected == "groq":
+                self.update_status("Groq / Whisper...")
+                try:
+                    result = transcribe_pcm(recorded_audio_data, self.mic_details['sample_rate'],
+                                            language=self.current_lang_code, **dict(self.app.groq_options))
+                except GroqError as error:
+                    self.update_status(txt('groq_' + error.code))
+                    return
+                text = result['text']
+                used_system, used_model_id = 'Groq', result['model_id']
+                log_message(f"Groq: model={used_model_id} audio={result['duration']:.1f}s "
+                            f"czas={result['latency']:.2f}s chunki={result['chunks']}")
+                if not text:
+                    self.update_status(txt('recognition_failed'))
+                    return
+
             # --- GEMINI ---
-            if selected == "gemini" and VERTEX_AVAILABLE:
+            elif selected == "gemini" and VERTEX_AVAILABLE:
                 self.update_status("Gemini...")
                 gemini_start = time.time()
                 gemini_result = transcribe_with_gemini(
@@ -780,9 +939,16 @@ class PttChannel:
                 text = gemini_result.get('text', '')
 
                 if text:
-                    log_message(f"CH {self.id}: Gemini OK w {gemini_time:.2f}s")
-                    used_system = "Gemini"
                     used_model_id = gemini_result.get('model_id')
+                    g_strategy = gemini_result.get('strategy', '?')
+                    g_dur = gemini_result.get('duration', 0) or 0
+                    g_rtf = gemini_time / g_dur if g_dur > 0 else 0
+                    log_message(
+                        f"CH {self.id}: Gemini OK model={used_model_id} strategia={g_strategy} "
+                        f"chunki={gemini_result.get('chunks', '?')} audio={g_dur:.1f}s "
+                        f"czas_workera={gemini_time:.2f}s RTF={g_rtf:.2f}x"
+                    )
+                    used_system = "Gemini"
                 else:
                     error = gemini_result.get('error', 'Brak tekstu')
                     last_error = error
@@ -941,7 +1107,11 @@ class SpeechToClipboardApp(QMainWindow):
         self.channel_being_configured = None
         self.is_any_recording_active = False
         self.all_input_mics_details = []
-        self.selected_model = "gemini"
+        self.selected_model = "groq"
+        self.groq_options = {'api_key': os.getenv('GROQ_API_KEY', '').strip(),
+                             'model': GROQ_MODELS[0], 'prompt': ''}
+        self.editing_text = False
+        self.vertex_initializing = False
         self.gui_language = UI_LANGUAGE
         self.fallback_to_google = DEFAULT_GOOGLE_FALLBACK
         self.sounds_enabled = True
@@ -967,11 +1137,15 @@ class SpeechToClipboardApp(QMainWindow):
         )
 
         self.init_ui()
+        self.signal_bridge.vertex_initialized.connect(self._vertex_ready)
+        QApplication.instance().focusChanged.connect(lambda old, new: self._update_editing_state())
+        QApplication.instance().applicationStateChanged.connect(lambda state: self._update_editing_state())
 
     def init_ui(self):
         """Inicjalizacja interfejsu uzytkownika."""
         self.setWindowTitle(txt("window_title"))
-        self.setFixedSize(787, 603)
+        self.setMinimumWidth(880)
+        self.resize(920, 1)
 
         # Ikona okna
         try:
@@ -998,9 +1172,14 @@ class SpeechToClipboardApp(QMainWindow):
         models_row = QHBoxLayout()
         self.model_button_group = QButtonGroup(self)
 
-        # Gemini - domyslnie wylaczony, wlaczony w run() po inicjalizacji Vertex AI
+        self.groq_radio = QRadioButton(txt('model_groq'))
+        self.groq_radio.toggled.connect(lambda checked: self._on_model_change('groq') if checked else None)
+        self.model_button_group.addButton(self.groq_radio)
+        models_row.addWidget(self.groq_radio)
+
+        # Gemini initializes only after explicit selection or a saved Gemini setting.
         self.gemini_radio = QRadioButton(txt("model_gemini"))
-        self.gemini_radio.setEnabled(False)  # Wlaczony pozniej w run()
+        self.gemini_radio.setEnabled(True)
         self.gemini_radio.toggled.connect(lambda checked: self._on_model_change("gemini") if checked else None)
         self.model_button_group.addButton(self.gemini_radio)
         models_row.addWidget(self.gemini_radio)
@@ -1043,13 +1222,31 @@ class SpeechToClipboardApp(QMainWindow):
         language_layout.addWidget(self.polish_radio)
         language_layout.addWidget(self.english_radio)
 
-        # Domyslnie Google dopoki Vertex AI nie zostanie sprawdzony
-        self.google_radio.setChecked(True)
-        self.selected_model = "google"
+        # Groq is the default provider, including before a key is configured.
+        self.groq_radio.setChecked(True)
+        self.selected_model = "groq"
 
         top_controls_layout.addWidget(self.model_group, 1)
         top_controls_layout.addWidget(self.gui_language_group)
         main_layout.addLayout(top_controls_layout)
+
+        self.groq_group = QGroupBox(txt('groq_group'))
+        groq_layout = QVBoxLayout(self.groq_group)
+        model_row = QHBoxLayout()
+        self.groq_model_label = QLabel(txt('groq_model'))
+        model_row.addWidget(self.groq_model_label)
+        self.groq_model_combo = QComboBox()
+        self.groq_model_combo.addItem('Whisper Large V3', GROQ_MODELS[0])
+        self.groq_model_combo.addItem('Whisper Large V3 Turbo', GROQ_MODELS[1])
+        self.groq_model_combo.currentIndexChanged.connect(self._groq_options_changed)
+        model_row.addWidget(self.groq_model_combo)
+        model_row.addStretch()
+        groq_layout.addLayout(model_row)
+        self.groq_help_label = QLabel(txt('groq_help'))
+        self.groq_help_label.setWordWrap(True)
+        self.groq_help_label.setStyleSheet('color: #a8b4cc; font-size: 12px;')
+        groq_layout.addWidget(self.groq_help_label)
+        main_layout.addWidget(self.groq_group)
 
         # --- Kanaly PTT ---
         for ch_id in self.ptt_channels:
@@ -1160,7 +1357,7 @@ class SpeechToClipboardApp(QMainWindow):
 
         self.status_label = QLabel(txt("status_initializing"))
         self.status_label.setWordWrap(True)
-        self.status_label.setFixedHeight(34)
+        self.status_label.setMinimumHeight(52)
         status_text_layout.addWidget(self.status_label)
 
         self.last_message_label = QLabel(txt("last_message"))
@@ -1207,11 +1404,9 @@ class SpeechToClipboardApp(QMainWindow):
         """)
         main_layout.addWidget(self.ptt_instruction_label)
 
-        # Rozciagnij reszte
-        main_layout.addStretch()
-
         # Inicjalizacja custom rules
         self._update_custom_rules()
+        self._update_provider_ui()
 
     def _create_channel_ui(self, channel_id):
         """Tworzy UI dla kanalu PTT."""
@@ -1234,6 +1429,7 @@ class SpeechToClipboardApp(QMainWindow):
         channel.lang_combo.setView(lang_view)
         channel.lang_combo.addItem(txt("language_polish"), "pl-PL")
         channel.lang_combo.addItem(txt("language_english"), "en-US")
+        channel.lang_combo.addItem(txt('language_auto'), 'auto')
         channel.lang_combo.setFixedWidth(92)
         lang_view.setFixedWidth(92)
         for i in range(channel.lang_combo.count()):
@@ -1282,6 +1478,48 @@ class SpeechToClipboardApp(QMainWindow):
         """Zmiana modelu transkrypcji."""
         self.selected_model = model
         log_message(f"Zmieniono model na: {model}")
+        self._update_provider_ui()
+        if model == 'gemini' and not VERTEX_AVAILABLE and not getattr(self, '_loading_settings', False):
+            QTimer.singleShot(0, self._initialize_gemini)
+
+    def _initialize_gemini(self):
+        if self.selected_model != 'gemini' or VERTEX_AVAILABLE or self.vertex_initializing:
+            return
+        self.vertex_initializing = True
+        self.update_status('Gemini / Vertex AI...')
+
+        def initialize():
+            self.signal_bridge.vertex_initialized.emit(setup_vertex_ai())
+
+        threading.Thread(target=initialize, daemon=True).start()
+
+    def _vertex_ready(self, available):
+        self.vertex_initializing = False
+        self._update_model_status_label()
+
+    def _update_provider_ui(self):
+        if hasattr(self, 'groq_group'):
+            self.groq_group.setVisible(self.selected_model == 'groq')
+        if hasattr(self, 'rules_group'):
+            self.rules_group.setVisible(self.selected_model == 'gemini')
+        self._update_model_status_label()
+        QTimer.singleShot(0, self._fit_window_height)
+
+    def _fit_window_height(self):
+        self.centralWidget().layout().activate()
+        self.resize(self.width(), self.sizeHint().height())
+
+    def _update_editing_state(self):
+        focus = QApplication.focusWidget()
+        self.editing_text = self.isActiveWindow() and isinstance(focus, (QLineEdit, QTextEdit))
+
+    def _groq_options_changed(self, *args):
+        if not hasattr(self, 'groq_model_combo'):
+            return
+        self.groq_options = {'api_key': self.groq_options['api_key'],
+                             'model': self.groq_model_combo.currentData(),
+                             'prompt': self.groq_options['prompt']}
+        self._update_model_status_label()
 
     def get_selected_model(self):
         """Zwraca wybrany model."""
@@ -1315,6 +1553,11 @@ class SpeechToClipboardApp(QMainWindow):
     def retranslate_ui(self):
         """Odświeża widoczne napisy bez zmiany konfiguracji transkrypcji."""
         self.setWindowTitle(txt("window_title"))
+        self.groq_radio.setText(txt('model_groq'))
+        self.groq_group.setTitle(txt('groq_group'))
+        for widget, key in [(self.groq_model_label, 'groq_model'),
+                            (self.groq_help_label, 'groq_help')]:
+            widget.setText(txt(key))
 
         if hasattr(self, "model_group"):
             self.model_group.setTitle(txt("model_group"))
@@ -1359,6 +1602,7 @@ class SpeechToClipboardApp(QMainWindow):
                 channel.lang_combo.blockSignals(True)
                 channel.lang_combo.setItemText(0, txt("language_polish"))
                 channel.lang_combo.setItemText(1, txt("language_english"))
+                channel.lang_combo.setItemText(2, txt('language_auto'))
                 for i in range(channel.lang_combo.count()):
                     if channel.lang_combo.itemData(i) == selected_lang:
                         channel.lang_combo.setCurrentIndex(i)
@@ -1458,6 +1702,7 @@ class SpeechToClipboardApp(QMainWindow):
         try:
             # Wczytaj istniejace ustawienia vertex_ai jesli istnieja
             existing_vertex_config = {}
+            existing = {}
             if os.path.exists(SETTINGS_FILE):
                 try:
                     with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -1477,7 +1722,8 @@ class SpeechToClipboardApp(QMainWindow):
             else:
                 existing_vertex_config.setdefault("model_id", GEMINI_MODEL)
 
-            settings = {
+            self._groq_options_changed()
+            settings = {**existing,
                 "model": self.selected_model,
                 "gui_language": self.gui_language,
                 "custom_rules": self.rules_text.toPlainText(),
@@ -1485,6 +1731,8 @@ class SpeechToClipboardApp(QMainWindow):
                 "sounds_enabled": self.sounds_enabled,
                 "sound_volume": self.sound_volume,
                 "vertex_ai": existing_vertex_config,
+                "groq": {**existing.get('groq', {}), 'model_id': self.groq_options['model'],
+                         'prompt': existing.get('groq', {}).get('prompt', self.groq_options['prompt'])},
                 "channels": {}
             }
             for ch_id, channel in self.ptt_channels.items():
@@ -1497,7 +1745,7 @@ class SpeechToClipboardApp(QMainWindow):
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=2, ensure_ascii=False)
             self.update_status(fmt("settings_saved", settings_file=SETTINGS_FILE))
-            log_message(f"Zapisano ustawienia: {settings}")
+            log_message("Zapisano ustawienia.")
         except Exception as e:
             self.update_status(fmt("settings_save_error", error=e))
             log_message(f"Błąd zapisu ustawień: {e}")
@@ -1508,16 +1756,25 @@ class SpeechToClipboardApp(QMainWindow):
             log_message("Brak pliku ustawien - uzycie domyslnych")
             return
 
+        self._loading_settings = True
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 settings = json.load(f)
 
-            log_message(f"Wczytano ustawienia: {settings}")
+            log_message("Wczytano ustawienia.")
             saved_gui_language = settings.get("gui_language", settings.get("ui_language", "pl"))
 
             # Model
-            saved_model = settings.get("model", "google")
-            if saved_model == "gemini" and VERTEX_AVAILABLE:
+            groq_config = settings.get('groq', {})
+            model_index = self.groq_model_combo.findData(groq_config.get('model_id', GROQ_MODELS[0]))
+            self.groq_model_combo.setCurrentIndex(max(0, model_index))
+            self.groq_options['prompt'] = groq_config.get('prompt', '').strip()
+            self._groq_options_changed()
+            saved_model = settings.get("model", "groq")
+            if saved_model == 'groq':
+                self.groq_radio.setChecked(True)
+                self.selected_model = 'groq'
+            elif saved_model == "gemini":
                 self.gemini_radio.setChecked(True)
                 self.selected_model = "gemini"
             elif saved_model == "vosk":
@@ -1577,10 +1834,13 @@ class SpeechToClipboardApp(QMainWindow):
                         channel.ptt_button.setText(saved_ptt.upper())
 
             self._set_gui_language_controls(saved_gui_language)
+            self._update_provider_ui()
 
             self.update_status(txt("settings_loaded"))
         except Exception as e:
             log_message(f"Błąd wczytywania ustawień: {e}")
+        finally:
+            self._loading_settings = False
 
     def _update_custom_rules(self):
         """Aktualizuje globalna zmienna custom rules."""
@@ -1602,6 +1862,11 @@ class SpeechToClipboardApp(QMainWindow):
         """Odświeża tekst statusu dostępności modeli."""
         if not hasattr(self, "model_status_label"):
             return
+        if self.selected_model == 'groq':
+            key = 'groq_configured' if self.groq_options['api_key'] else 'groq_missing_key'
+            self.model_status_label.setText(txt(key))
+            self.model_status_label.setWordWrap(True)
+            return
 
         status_parts = []
         if VERTEX_AVAILABLE:
@@ -1616,6 +1881,8 @@ class SpeechToClipboardApp(QMainWindow):
         self.model_status_label.setText(" | ".join(status_parts))
 
     def _format_processed_model_label(self, used_system, model_id=None):
+        if used_system == 'Groq':
+            return 'Groq / ' + ('Whisper V3 Turbo' if model_id == GROQ_MODELS[1] else 'Whisper Large V3')
         if used_system == "Gemini":
             model_id = model_id or VERTEX_MODEL_ID or GEMINI_MODEL
             return self._format_gemini_model_name(model_id)
@@ -1629,6 +1896,7 @@ class SpeechToClipboardApp(QMainWindow):
 
     def _format_gemini_model_name(self, model_id):
         known_models = {
+            "gemini-3.5-flash": "Gemini 3.5 Flash",
             "gemini-3.1-flash-lite": "Gemini 3.1 Flash-Lite",
             "gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash-Lite Preview",
             "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
@@ -1793,6 +2061,8 @@ class SpeechToClipboardApp(QMainWindow):
         def key_event_handler(event: keyboard.KeyboardEvent):
             if stop_program_event.is_set():
                 return
+            if self.editing_text and not self.channel_being_configured and event.event_type == keyboard.KEY_DOWN:
+                return
 
             if self.channel_being_configured and event.event_type == keyboard.KEY_DOWN:
                 channel_to_configure = self.channel_being_configured
@@ -1895,25 +2165,25 @@ class SpeechToClipboardApp(QMainWindow):
 
     def run(self):
         """Uruchamia aplikacje."""
+        # Rotacja logu: zachowaj poprzedni przebieg ze znacznikiem czasu
+        # (potrzebne do porownywania modeli/strategii miedzy uruchomieniami).
         if os.path.exists(LOG_FILE_NAME):
             try:
-                os.remove(LOG_FILE_NAME)
+                stamp = time.strftime("%Y%m%d_%H%M%S")
+                base, ext = os.path.splitext(LOG_FILE_NAME)
+                os.replace(LOG_FILE_NAME, f"{base}_{stamp}{ext}")
             except Exception:
-                pass
+                try:
+                    os.remove(LOG_FILE_NAME)
+                except Exception:
+                    pass
 
         log_message(f"Uruchamianie Yapper {APP_VERSION} (PyQt6)")
 
         # Inicjalizacja Vertex AI
-        if USE_GEMINI:
-            log_message("Inicjalizacja Vertex AI (Gemini)...")
-            if setup_vertex_ai():
-                log_message("Vertex AI gotowy do uzycia.")
-                self.gemini_radio.setEnabled(True)
-                self.gemini_radio.setChecked(True)  # Przelacz na Gemini
-                self.selected_model = "gemini"
-            else:
-                log_message("Vertex AI niedostępny.")
-                self.gemini_radio.setEnabled(False)
+        self._load_settings()
+        if USE_GEMINI and self.selected_model == 'gemini':
+            self._initialize_gemini()
 
         # Aktualizuj status modeli
         self._update_model_status_label()
@@ -1941,6 +2211,7 @@ class SpeechToClipboardApp(QMainWindow):
 
 
 def main():
+    os.chdir(APP_DIR)
     if not acquire_single_instance_lock():
         return
 
@@ -2051,7 +2322,7 @@ def main():
         }
 
         /* TextEdit - obszar tekstowy */
-        QTextEdit {
+        QTextEdit, QLineEdit {
             background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                 stop:0 #2a2a45, stop:1 #232340);
             border: 1px solid #3a3a5c;
