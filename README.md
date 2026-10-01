@@ -2,7 +2,20 @@
 
 Yapper is a Windows speech-to-text application with two independent push-to-talk channels. Each channel has its own microphone, shortcut, and transcription language. The recognition engine is selected for the whole application.
 
-## What's new in 1.3.0
+[Published builds](https://github.com/Xcape53/Yapper/releases) · [Run from source](#requirements-and-installation) · [Privacy](#privacy)
+
+<picture>
+<source media="(prefers-color-scheme: dark)" srcset="docs/profile/cover-dark.svg">
+<img alt="yapper functional overview" src="docs/profile/cover-light.svg" width="650">
+</picture>
+
+## Everyday dictation
+
+Hold a channel shortcut while speaking, release it to transcribe, then paste the result into your application. Two channels let you keep separate microphones and languages ready. Online recognition uses the selected provider; Vosk provides local offline transcription.
+
+The latest published build is **v1.2.0**. The source branch includes the newer Groq integration described below.
+
+## Current source: 1.3.0
 
 - Groq Whisper transcription with **Whisper Large V3** and **Whisper Large V3 Turbo** in the GUI.
 - Groq is the default engine; Large V3 is the default model.
@@ -59,11 +72,7 @@ The prompt guides spelling and terminology, with a provider limit of 224 tokens.
 
 Audio captured as mono 16-bit PCM is uploaded as WAV using multipart requests to `/openai/v1/audio/transcriptions`. No ffmpeg installation is needed. WAV payloads are limited to 24 MB per request; longer recordings are split with a one-second overlap. Exact overlapping words are merged, but chunk boundaries can still affect recognition. If any chunk fails, the partial transcript is not copied. See [Groq speech-to-text documentation](https://console.groq.com/docs/speech-to-text).
 
-### Google Cloud trials and repeated accounts
-
-Do not rely on creating more Google accounts to repeatedly claim trial credits for Gemini ("trial abuse"). Google verifies identity and payment information to reduce fraud, and trial eligibility requires that you have not previously signed up for the trial. Creating another account does not guarantee another credit allocation or service activation. We do not know the details of Google's account-linking detection. See [Google Cloud trial eligibility and verification](https://docs.cloud.google.com/free/docs/free-cloud-features).
-
-Groq Whisper is now an alternative in Yapper. Its free plan also has [usage limits](https://console.groq.com/docs/rate-limits); it is not unlimited free transcription.
+Provider access and free-plan limits are covered in [provider notes](docs/provider-access.md).
 
 ## Other recognition engines
 
